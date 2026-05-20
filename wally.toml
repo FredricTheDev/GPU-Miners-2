@@ -1,0 +1,21 @@
+[package]
+name = "noobg/gpu-miners-2"
+version = "0.1.0"
+registry = "https://github.com/UpliftGames/wally-index"
+realm = "shared"
+
+[dependencies]
+Promise = "evaera/promise@4.0.0"
+Signal = "sleitnick/signal@2.0.3"
+Replica = "ivasmigins/replica@0.1.0"
+Symbol = "sleitnick/symbol@2.0.1"
+Trove = "sleitnick/trove@1.8.0"
+Zone = "chabba100/zone@5.0.6"
+Sift = "csqrl/sift@0.0.11"
+Sera = "enzzyfrenzzy/sera@0.0.2"
+Module3d = "kumarion/module3d@0.0.2"
+Maid = "coiorevent8/maid@3.4.0"
+Component = "sleitnick/component@2.4.8"
+
+[server-dependencies]
+ProfileStore = "ddashdev/profilestore@1.0.4"
