@@ -17,7 +17,7 @@ function EconomyService:OnInit() end
 
 function EconomyService:OnStart() end
 
-function EconomyService.UpdateBusinessEnconomy(business: BusinessState, deltaSeconds: number)
+function EconomyService.UpdateBusinessEconomy(business: BusinessState, deltaSeconds: number)
     -- this is placeholder logic, later will work with global or server economy events
     local demandWave = math.sin(os.clock() / 120) * 0.05
     business.economy.marketDemand = math.clamp(1 + demandWave + business.reputation / 300, 0.25, 2)

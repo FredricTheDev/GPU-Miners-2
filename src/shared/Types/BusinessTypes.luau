@@ -28,6 +28,7 @@ export type StaffMember = {
 	happiness: number,
 	skill: number,
 	currentTaskId: string?,
+    physicalModelName: string?,
 }
 
 export type ShelfState = {
@@ -64,6 +65,10 @@ export type CustomerRuntimeState = {
     profile: CustomerProfile,
     targetShelfId: string?,
     desiredGpuId: string?,
+    avatarUserId: number?,
+    physicalModelName: string?,
+    lastObservedScore: number,
+    lastDecisionAt: number,
     timeInState: number,
     satisfaction: number,
 }

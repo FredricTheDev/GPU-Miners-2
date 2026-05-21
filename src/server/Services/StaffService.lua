@@ -1,7 +1,10 @@
 --!strict
+local CollectionService = game:GetService("CollectionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local BusinessTypes = require(ReplicatedStorage.Shared.Types.BusinessTypes)
+local RuntimeTypes = require(ReplicatedStorage.Shared.Types.RuntimeTypes)
+local WorldTags = require(ReplicatedStorage.Shared.WorldTags)
 
 type BusinessState = BusinessTypes.BusinessState
 type StaffMember = BusinessTypes.StaffMember
@@ -9,7 +12,33 @@ type StaffTask = BusinessTypes.StaffTask
 type StaffTaskType = BusinessTypes.StaffTaskType
 type StaffMemberRole = BusinessTypes.StaffMemberRole
 
-local StaffService = {}
+type StaffServiceType = RuntimeTypes.ModuleRuntimeType & {
+	_registry: any,
+
+	_worldQueryService: any?,
+	_avatarService: any?,
+
+	Configure: (self: StaffServiceType, registry: any) -> (),
+	OnInit: (self: StaffServiceType) -> (),
+	OnStart: (self: StaffServiceType) -> (),
+
+	CreateTask: (
+		business: BusinessState,
+		taskType: StaffTaskType,
+		priority: number,
+		targetId: string?,
+		expiresAfterSeconds: number?
+	) -> StaffTask,
+
+	HireStaff: (business: BusinessState, role: StaffMemberRole) -> StaffMember,
+	GenerateStoreTasks: (business: BusinessState) -> (),
+	AssignTasks: (business: BusinessState) -> (),
+	ResolveAssignedTasks: (business: BusinessState, deltaSeconds: number) -> (),
+	UpdateStaff: (business: BusinessState, deltaSeconds: number) -> (),
+	SpawnPhysicalStaffAsync: (business: BusinessState, staffMember: StaffMember) -> ()
+}
+
+local StaffService = {} :: StaffServiceType
 
 StaffService.Name = "StaffService"
 StaffService.Priority = 0
@@ -44,6 +73,13 @@ end
 local function canStaffHandleTask(staffMember: StaffMember, task: StaffTask): boolean
 	local allowed = roleTaskTypes[staffMember.role]
 	return allowed ~= nil and allowed[task.taskType] == true
+end
+
+function StaffService:Configure(registry)
+	self._registry = registry
+
+	self._worldQueryService = registry.WorldQueryService
+	self._avatarService = registry.AvatarService
 end
 
 function StaffService:OnInit() end
@@ -86,10 +122,34 @@ function StaffService.HireStaff(business: BusinessState, role: StaffMemberRole):
 		happiness = 75,
 		skill = 1,
 		currentTaskId = nil,
+		physicalModelName = nil,
 	}
 
 	business.staff[staffMember.id] = staffMember
+	task.spawn(StaffService.SpawnPhysicalStaffAsync, business, staffMember)
 	return staffMember
+end
+
+function StaffService.SpawnPhysicalStaffAsync(business: BusinessState, staffMember: StaffMember)
+	if staffMember.physicalModelName ~= nil then
+		return
+	end
+
+	-- Todo: custom model rigs // NOT FRIENDS!
+	local avatarUserId = StaffService._avatarService.GetAvatarUserIdForOwner(business.ownerUserId)
+	local modelName = `{business.id}_{staffMember.id}`
+	local model = StaffService._avatarService.CreateCustomerModelAsync(avatarUserId, modelName)
+	staffMember.physicalModelName = model.Name
+
+	model:SetAttribute("BusinessId", business.id)
+	model:SetAttribute("StaffId", staffMember.id)
+	model:SetAttribute("Role", staffMember.role)
+	model:SetAttribute("ViewRange", if staffMember.role == "Guard" then 55 else 35)
+	model:SetAttribute("ViewFovDegrees", if staffMember.role == "Guard" then 110 else 80)
+	model:PivotTo(StaffService._worldQueryService.GetCheckoutCFrame(business.id))
+	model.Parent = StaffService._worldQueryService.GetOrCreateStaffFolder()
+
+	CollectionService:AddTag(model, WorldTags.StaffNpc)
 end
 
 function StaffService.GenerateStoreTasks(business: BusinessState)

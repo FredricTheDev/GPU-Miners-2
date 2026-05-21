@@ -8,7 +8,7 @@ local RuntimeTypes = require(ReplicatedStorage.Shared.Types.RuntimeTypes)
 type BusinessState = BusinessTypes.BusinessState
 
 type SimulationServiceType = RuntimeTypes.ModuleRuntimeType & {
-    registry: any,
+    _registry: any,
 
     _businessService: any?,
     _economyService: any?,
@@ -35,7 +35,7 @@ SimulationService.Dependencies = {
     "BusinessService",
     "CustomerService",
     "EconomyService",
-    "LogisiticsService",
+    "LogisticsService",
     "MiningService",
     "SecurityService",
     "StaffService",
@@ -48,7 +48,7 @@ local MAX_CATCHUP_STEPS = 3
 local running = false
 
 function SimulationService:Configure(registry)
-    self.registry = registry
+    self._registry = registry
 
     self._businessService = registry.BusinessService
 	self._economyService = registry.EconomyService
@@ -82,12 +82,14 @@ function SimulationService:OnStart()
 			local steps = 0
 
 			while accumulator >= TICK_SECONDS and steps < MAX_CATCHUP_STEPS do
-				local success, err = pcall(function()
+				local success, result = xpcall(function()
 					self:StepAllBusinesses(TICK_SECONDS)
+				end, function(err)
+					return `Handled Error: {err} \n {debug.traceback()}`
 				end)
 
 				if not success then
-					warn("[SimulationService] Step failed:", err)
+					warn("[SimulationService] Step failed:", result)
 				end
 
 				accumulator -= TICK_SECONDS
@@ -104,6 +106,7 @@ function SimulationService:OnStart()
 end
 
 function SimulationService:StepBusiness(business: BusinessState, deltaSeconds: number)
+	print("Simulation is stepping businesses")
         -- fixed order to prevent side effects
 	self._economyService.UpdateBusinessEconomy(business, deltaSeconds)
 	self._customerService.UpdateCustomers(business, deltaSeconds)
