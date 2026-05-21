@@ -35,7 +35,7 @@ local PlotService = {} :: PlotServiceType
 
 PlotService.Name = "PlotService"
 PlotService.Priority = 0
-PlotService.Dependencies = { "GarbageService" }
+PlotService.Dependencies = { "GarbageService", "BusinessService" }
 PlotService.Disabled = false
 
 function PlotService:Configure(registry)
