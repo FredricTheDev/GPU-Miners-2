@@ -1,3 +1,4 @@
+local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Workspace = game:GetService("Workspace")
@@ -5,8 +6,10 @@ local Workspace = game:GetService("Workspace")
 local Sift = require(ReplicatedStorage.Packages.Sift)
 local Trove = require(ReplicatedStorage.Packages.Trove)
 local PlayerUtil = require(ReplicatedStorage.Shared.Util.PlayerUtil)
+local WorldTags = require(ReplicatedStorage.Shared.WorldTags)
 
 local store = ReplicatedStorage:WaitForChild("Plot"):WaitForChild("Store") :: Model
+local plotAssets = ReplicatedStorage:WaitForChild("PlotAssets") :: Folder
 
 local Plots = Workspace:WaitForChild("Plots") :: { [string]: Part } & Folder
 
@@ -87,15 +90,36 @@ function PlotService:AssignPlot(player: Player, plotIndex: number): ()
 
 	self.plots[plotIndex] = {
 		OwnerId = player.UserId,
-		Models = {
-			Store = storeClone,
-		},
+		Models = { Store = storeClone },
 	} :: PlotData
 
 	print(`Setting {player.Name} plot {plotIndex}`)
 	self:SpawnPlayerAtPlot(player)
 
 	self._registry.BusinessService.LoadBusiness(player)
+
+	local business = self._registry.BusinessService.GetBusinessForPlayer(player)
+	if not business then
+		return
+	end
+	local businessId = business.id
+
+	storeClone:WaitForChild("CustomerSpawn"):SetAttribute("BusinessId", businessId)
+	storeClone:WaitForChild("CustomerExit"):SetAttribute("BusinessId", businessId)
+
+	self:SetBusinessIdOnInstances(businessId, {
+		storeClone:WaitForChild("NavigationNodes"),
+		storeClone:WaitForChild("Shelves"),
+		storeClone:WaitForChild("Checkouts"),
+	})
+end
+
+function PlotService:SetBusinessIdOnInstances(businessId: string, instanceGroup: { Instance })
+	for _, instance in ipairs(instanceGroup) do
+		for _, child in instance:GetChildren() do
+			child:SetAttribute("BusinessId", businessId)
+		end
+	end
 end
 
 function PlotService:SpawnPlayerAtPlot(player: Player)

@@ -2,6 +2,8 @@
 
 export type StaffMemberRole = "Cashier" | "Stocker" | "Guard" | "Technician"
 
+export type ShoppingGoal = "Gaming" | "Mining" | "Budget" | "Premium"
+
 export type StaffTaskType =
     "ServeCheckout"
     | "RestockShelf"
@@ -42,6 +44,7 @@ export type ShelfState = {
 export type StoreState = {
     shelves: { [string]: ShelfState },
     checkoutQueueLength: number,
+    checkoutQueueSlots: { [string]: number },
     open: boolean,
 }
 
@@ -56,15 +59,25 @@ export type CustomerProfile = {
     patience: number,
     theftRiskTolerance: number,
     priceSensitivity: number,
-    preferredGpuId: string?
+    preferredGpuId: string?,
+    shoppingGoal: ShoppingGoal,
+    wantedGpuIds: { string },
+    maxPurchases: number,
+    impulseBuyChance: number,
 }
 
 export type CustomerRuntimeState = {
     id: string,
     state: "Entering" | "Browsing" | "Queueing" | "Buying" | "Stealing" | "Leaving",
     profile: CustomerProfile,
+    isSpawningPhysicalModel: boolean,
     targetShelfId: string?,
     desiredGpuId: string?,
+    browseShelfIds: { string },
+    browseIndex: number,
+    cartShelfIds: { string },
+    purchasedGpuIds: { string },
+    remainingBudget: number,
     avatarUserId: number?,
     physicalModelName: string?,
     lastObservedScore: number,
@@ -122,7 +135,8 @@ export type BusinessState = {
     miningRigs: { [string]: MiningRig },
     security: SecurityState,
     economy: EconomyState,
-    customers: { [string]: CustomerRuntimeState }
+    customers: { [string]: CustomerRuntimeState },
+    customerSpawnBudget: number,
 }
 
 return {}

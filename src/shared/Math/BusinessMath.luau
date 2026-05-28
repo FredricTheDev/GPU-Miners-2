@@ -7,10 +7,18 @@ function BusinessMath.CalculateGpuSellPrice(basePrice: number, reputation: numbe
     return math.max(1, math.floor(basePrice * priceMultiplier * reputationBonus))
 end
 
-function BusinessMath.CalculateCustomerDemand(marketDemand: number, reputation: number, priceSensitivity: number): number
-    local reputationFactor = 0.5 + math.clamp(reputation, 0, 100) / 100
-    local sensitivityPenalty = math.clamp(priceSensitivity, 0, 1) * 0.25
-    return math.clamp(marketDemand * reputationFactor - sensitivityPenalty, 0, 2)
+function BusinessMath.CalculateCustomerDemand(
+    marketDemand: number, 
+    reputation: number, 
+    priceSensitivity: number
+): number
+    local marketFactor = math.clamp(marketDemand, 0, 1)
+    local reputationFactor = math.clamp(reputation, 0, 100) / 100
+    local pricePenalty = math.clamp(priceSensitivity, 0, 1) * 0.3
+
+    local demand = marketFactor * 1.2 + reputationFactor * 0.8 - pricePenalty
+
+    return math.clamp(demand, 0, 2)
 end
 
 function BusinessMath.CalculateTheftChance(securityLevel: number, crowdDensity: number, theftRiskTolerance: number): number

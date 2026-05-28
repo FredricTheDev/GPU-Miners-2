@@ -1,0 +1,558 @@
+local CollectionService = game:GetService("CollectionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local WorldQueryService = require(script.Parent.WorldQueryService)
+local WorldTags = require(ReplicatedStorage.Shared.WorldTags)
+
+export type NavNode = {
+	instance: Instance,
+	nodeId: string,
+	nodeType: string,
+	businessId: string,
+	cframe: CFrame,
+	connectedNodeIds: { string },
+	capacity: number,
+	shelfId: string?,
+}
+
+export type StoreGraph = {
+	businessId: string,
+	nodes: { [string]: NavNode },
+	walkZones: { BasePart },
+}
+
+local StoreNavigationService = {}
+
+StoreNavigationService.Name = "StoreNavigationService"
+StoreNavigationService.Priority = 0
+
+local graphCache: { [string]: StoreGraph } = {}
+local graphBuiltAt: { [string]: number } = {}
+local GRAPH_CACHE_SECONDS = 30
+
+local NAV_NODE_TAGS = {
+	WorldTags.StoreNavNode,
+	WorldTags.EntranceNode,
+	WorldTags.ExitNode,
+	WorldTags.CheckoutNode,
+	WorldTags.ShelfNavNode,
+}
+
+local MAX_NODE_SNAP_DISTANCE = 18
+local STORE_BOUNDARY_PADDING = 4
+local CORNER_RADIUS = 2.75
+local MIN_CORNER_SEGMENT_LENGTH = 4
+
+local function parseConnectedNodes(value: any): { string }
+	if typeof(value) ~= "string" or value == "" then
+		return {}
+	end
+
+	local ids: { string } = {}
+	for segment in string.gmatch(value, "[^,%s]+") do
+		table.insert(ids, segment)
+	end
+	return ids
+end
+
+local function inferNodeType(instance: Instance, attributeType: any): string
+	if typeof(attributeType) == "string" and attributeType ~= "" then
+		return attributeType
+	end
+	if CollectionService:HasTag(instance, WorldTags.EntranceNode) then
+		return "Entrance"
+	elseif CollectionService:HasTag(instance, WorldTags.ExitNode) then
+		return "Exit"
+	elseif CollectionService:HasTag(instance, WorldTags.CheckoutNode) then
+		return "Checkout"
+	elseif CollectionService:HasTag(instance, WorldTags.ShelfNavNode) then
+		return "Shelf"
+	end
+	return "Aisle"
+end
+
+local function buildNodeFromInstance(instance: Instance, businessId: string): NavNode?
+	local nodeId = instance:GetAttribute("NodeId")
+	if typeof(nodeId) ~= "string" or nodeId == "" then
+		nodeId = instance.Name
+	end
+
+	local cframe = WorldQueryService.GetCFrame(instance)
+	if not cframe then
+		return nil
+	end
+
+	local capacity = instance:GetAttribute("Capacity")
+	local shelfId = instance:GetAttribute("ShelfId")
+
+	return {
+		instance = instance,
+		nodeId = nodeId,
+		nodeType = inferNodeType(instance, instance:GetAttribute("NodeType")),
+		businessId = businessId,
+		cframe = cframe,
+		connectedNodeIds = parseConnectedNodes(instance:GetAttribute("ConnectedNodes")),
+		capacity = if typeof(capacity) == "number" then capacity else 3,
+		shelfId = if typeof(shelfId) == "string" then shelfId else nil,
+	}
+end
+
+local function getFlatDirection(fromPosition: Vector3, toPosition: Vector3): Vector3?
+	local delta = Vector3.new(toPosition.X - fromPosition.X, 0, toPosition.Z - fromPosition.Z)
+
+	if delta.Magnitude < 0.05 then
+		return nil
+	end
+
+	return delta.Unit
+end
+
+local function getFlatDistance(a: Vector3, b: Vector3): number
+	return Vector3.new(a.X - b.X, 0, a.Z - b.Z).Magnitude
+end
+
+local function cframeLookingAt(position: Vector3, lookTarget: Vector3): CFrame
+	local flatTarget = Vector3.new(lookTarget.X, position.Y, lookTarget.Z)
+
+	if (flatTarget - position).Magnitude < 0.05 then
+		return CFrame.new(position)
+	end
+
+	return CFrame.lookAt(position, flatTarget)
+end
+
+local function roundRouteCorners(waypoints: { CFrame }): { CFrame }
+	if #waypoints <= 2 then
+		return waypoints
+	end
+
+	local rounded: { CFrame } = {}
+	table.insert(rounded, waypoints[1])
+
+	for index = 2, #waypoints - 1 do
+		local previousPosition = waypoints[index - 1].Position
+		local currentPosition = waypoints[index].Position
+		local nextPosition = waypoints[index + 1].Position
+
+		local directionToPrevious = getFlatDirection(currentPosition, previousPosition)
+		local directionToNext = getFlatDirection(currentPosition, nextPosition)
+
+		if not directionToPrevious or not directionToNext then
+			table.insert(rounded, waypoints[index])
+			continue
+		end
+
+		local previousDistance = getFlatDistance(previousPosition, currentPosition)
+		local nextDistance = getFlatDistance(currentPosition, nextPosition)
+
+		if previousDistance < MIN_CORNER_SEGMENT_LENGTH or nextDistance < MIN_CORNER_SEGMENT_LENGTH then
+			table.insert(rounded, waypoints[index])
+			continue
+		end
+
+		local radius = math.min(CORNER_RADIUS, previousDistance * 0.4, nextDistance * 0.4)
+
+		local entryPosition = currentPosition + directionToPrevious * radius
+		local exitPosition = currentPosition + directionToNext * radius
+
+		table.insert(rounded, cframeLookingAt(entryPosition, currentPosition))
+		table.insert(rounded, cframeLookingAt(exitPosition, nextPosition))
+	end
+
+	table.insert(rounded, waypoints[#waypoints])
+	return rounded
+end
+
+function StoreNavigationService.InvalidateGraph(businessId: string)
+	graphCache[businessId] = nil
+	graphBuiltAt[businessId] = nil
+end
+
+function StoreNavigationService.BuildGraph(businessId: string): StoreGraph
+	local now = os.clock()
+	local cached = graphCache[businessId]
+	local builtAt = graphBuiltAt[businessId]
+
+	if cached and builtAt and now - builtAt < GRAPH_CACHE_SECONDS then
+		return cached
+	end
+
+	local nodes: { [string]: NavNode } = {}
+	local seenInstances: { [Instance]: boolean } = {}
+
+	for _, tag in NAV_NODE_TAGS do
+		for _, instance in CollectionService:GetTagged(tag) do
+			if seenInstances[instance] then
+				continue
+			end
+
+			local instanceBusinessId = instance:GetAttribute("BusinessId")
+			if instanceBusinessId ~= nil and instanceBusinessId ~= businessId then
+				continue
+			end
+			if instanceBusinessId == nil and not instance:IsDescendantOf(workspace) then
+				continue
+			end
+
+			local node = buildNodeFromInstance(instance, businessId)
+			if node then
+				nodes[node.nodeId] = node
+				seenInstances[instance] = true
+			end
+		end
+	end
+
+	local walkZones: { BasePart } = {}
+	for _, instance in WorldQueryService.GetTaggedInstancesForBusiness(WorldTags.StoreWalkZone, businessId) do
+		if instance:IsA("BasePart") then
+			table.insert(walkZones, instance)
+		end
+	end
+
+	local graph: StoreGraph = {
+		businessId = businessId,
+		nodes = nodes,
+		walkZones = walkZones,
+	}
+
+	graphCache[businessId] = graph
+	graphBuiltAt[businessId] = now
+	return graph
+end
+
+function StoreNavigationService.GetNode(graph: StoreGraph, nodeId: string): NavNode?
+	return graph.nodes[nodeId]
+end
+
+function StoreNavigationService.FindNearestNode(businessId: string, position: Vector3): NavNode?
+	local graph = StoreNavigationService.BuildGraph(businessId)
+	local nearest: NavNode? = nil
+	local nearestDistance = math.huge
+
+	for _, node in graph.nodes do
+		local distance = (node.cframe.Position - position).Magnitude
+		if distance < nearestDistance then
+			nearestDistance = distance
+			nearest = node
+		end
+	end
+
+	if nearest and nearestDistance <= MAX_NODE_SNAP_DISTANCE then
+		return nearest
+	end
+
+	return nearest
+end
+
+function StoreNavigationService.FindNodeByType(businessId: string, nodeType: string): NavNode?
+	local graph = StoreNavigationService.BuildGraph(businessId)
+	for _, node in graph.nodes do
+		if node.nodeType == nodeType then
+			return node
+		end
+	end
+	return nil
+end
+
+function StoreNavigationService.FindNodeForShelf(businessId: string, shelfId: string): NavNode?
+	local graph = StoreNavigationService.BuildGraph(businessId)
+	for _, node in graph.nodes do
+		if node.shelfId == shelfId then
+			return node
+		end
+	end
+	return nil
+end
+
+function StoreNavigationService.IsPositionInStore(businessId: string, position: Vector3): boolean
+	local graph = StoreNavigationService.BuildGraph(businessId)
+
+	if #graph.walkZones > 0 then
+		for _, zone in graph.walkZones do
+			local localPos = zone.CFrame:PointToObjectSpace(position)
+			local half = zone.Size * 0.5 + Vector3.new(STORE_BOUNDARY_PADDING, 4, STORE_BOUNDARY_PADDING)
+			if math.abs(localPos.X) <= half.X and math.abs(localPos.Y) <= half.Y and math.abs(localPos.Z) <= half.Z then
+				return true
+			end
+		end
+		return false
+	end
+
+	for _, node in graph.nodes do
+		if (node.cframe.Position - position).Magnitude <= MAX_NODE_SNAP_DISTANCE + 6 then
+			return true
+		end
+	end
+
+	return #graph.nodes == 0
+end
+
+function StoreNavigationService.ValidateRouteInStore(businessId: string, waypoints: { Vector3 }): boolean
+	for index = 1, #waypoints do
+		if not StoreNavigationService.IsPositionInStore(businessId, waypoints[index]) then
+			return false
+		end
+		if index < #waypoints then
+			local midpoint = (waypoints[index] + waypoints[index + 1]) * 0.5
+			if not StoreNavigationService.IsPositionInStore(businessId, midpoint) then
+				return false
+			end
+		end
+	end
+	return true
+end
+
+local function heuristic(from: Vector3, to: Vector3): number
+	return (from - to).Magnitude
+end
+
+local function reconstructPath(
+	cameFrom: { [string]: string },
+	currentId: string,
+	nodes: { [string]: NavNode }
+): { NavNode }
+	local path: { NavNode } = {}
+	local cursor: string? = currentId
+
+	while cursor do
+		local node = nodes[cursor]
+		if not node then
+			break
+		end
+		table.insert(path, 1, node)
+		cursor = cameFrom[cursor]
+	end
+
+	return path
+end
+
+function StoreNavigationService.FindRoute(businessId: string, fromNodeId: string, toNodeId: string): { NavNode }
+	if fromNodeId == toNodeId then
+		local graph = StoreNavigationService.BuildGraph(businessId)
+		local node = graph.nodes[fromNodeId]
+		return if node then { node } else {}
+	end
+
+	local graph = StoreNavigationService.BuildGraph(businessId)
+	local startNode = graph.nodes[fromNodeId]
+	local goalNode = graph.nodes[toNodeId]
+
+	if not startNode or not goalNode then
+		return {}
+	end
+
+	local openSet: { string } = { fromNodeId }
+	local cameFrom: { [string]: string } = {}
+	local gScore: { [string]: number } = { [fromNodeId] = 0 }
+	local fScore: { [string]: number } = {
+		[fromNodeId] = heuristic(startNode.cframe.Position, goalNode.cframe.Position),
+	}
+
+	while #openSet > 0 do
+		table.sort(openSet, function(leftId, rightId)
+			return (fScore[leftId] or math.huge) < (fScore[rightId] or math.huge)
+		end)
+
+		local currentId = table.remove(openSet, 1) :: string
+		if currentId == toNodeId then
+			return reconstructPath(cameFrom, currentId, graph.nodes)
+		end
+
+		local currentNode = graph.nodes[currentId]
+		if not currentNode then
+			continue
+		end
+
+		for _, neighborId in currentNode.connectedNodeIds do
+			local neighbor = graph.nodes[neighborId]
+			if not neighbor then
+				continue
+			end
+
+			local tentativeG = (gScore[currentId] or math.huge)
+				+ (currentNode.cframe.Position - neighbor.cframe.Position).Magnitude
+
+			if tentativeG < (gScore[neighborId] or math.huge) then
+				cameFrom[neighborId] = currentId
+				gScore[neighborId] = tentativeG
+				fScore[neighborId] = tentativeG + heuristic(neighbor.cframe.Position, goalNode.cframe.Position)
+
+				local inOpen = false
+				for _, openId in openSet do
+					if openId == neighborId then
+						inOpen = true
+						break
+					end
+				end
+				if not inOpen then
+					table.insert(openSet, neighborId)
+				end
+			end
+		end
+	end
+
+	return {}
+end
+
+function StoreNavigationService.FindRouteBetweenPositions(
+	businessId: string,
+	fromPosition: Vector3,
+	toPosition: Vector3,
+	goalNodeId: string?
+): { CFrame }
+	local graph = StoreNavigationService.BuildGraph(businessId)
+
+	if next(graph.nodes) == nil then
+		return { CFrame.new(toPosition) }
+	end
+
+	local startNode = StoreNavigationService.FindNearestNode(businessId, fromPosition)
+	if not startNode then
+		return { CFrame.new(toPosition) }
+	end
+
+	local goalNode: NavNode? = nil
+	if goalNodeId then
+		goalNode = graph.nodes[goalNodeId]
+	end
+	if not goalNode then
+		goalNode = StoreNavigationService.FindNearestNode(businessId, toPosition)
+	end
+	if not goalNode then
+		return { CFrame.new(toPosition) }
+	end
+
+	local nodePath = StoreNavigationService.FindRoute(businessId, startNode.nodeId, goalNode.nodeId)
+	local waypoints: { CFrame } = {}
+
+	for index, node in nodePath do
+		local isFirst = index == 1
+		local isLast = index == #nodePath
+
+		if isFirst then
+			local distanceFromCustomer = (node.cframe.Position - fromPosition).Magnitude
+			if distanceFromCustomer < 6 then
+				continue
+			end
+		end
+
+		if isLast then
+			local distanceToFinalTarget = (node.cframe.Position - toPosition).Magnitude
+			if distanceToFinalTarget < 7 then
+				continue
+			end
+		end
+
+		table.insert(waypoints, node.cframe)
+	end
+
+	local finalCFrame = CFrame.new(toPosition)
+	if #waypoints == 0 or (waypoints[#waypoints].Position - toPosition).Magnitude > 1.5 then
+		table.insert(waypoints, finalCFrame)
+	else
+		waypoints[#waypoints] = finalCFrame
+	end
+
+	local positions: { Vector3 } = {}
+	for _, cframe in waypoints do
+		table.insert(positions, cframe.Position)
+	end
+
+	if not StoreNavigationService.ValidateRouteInStore(businessId, positions) then
+		local trimmed: { CFrame } = {}
+		for _, cframe in waypoints do
+			if StoreNavigationService.IsPositionInStore(businessId, cframe.Position) then
+				table.insert(trimmed, cframe)
+			end
+		end
+		if #trimmed > 0 then
+			return trimmed
+		end
+	end
+
+	return waypoints -- roundRouteCorners(waypoints)
+end
+
+function StoreNavigationService.FindRouteToShelf(
+	businessId: string,
+	fromPosition: Vector3,
+	shelfId: string,
+	browseCFrame: CFrame
+): { CFrame }
+	local shelfNode = StoreNavigationService.FindNodeForShelf(businessId, shelfId)
+	if shelfNode then
+		return StoreNavigationService.FindRouteBetweenPositions(
+			businessId,
+			fromPosition,
+			browseCFrame.Position,
+			shelfNode.nodeId
+		)
+	end
+	return StoreNavigationService.FindRouteBetweenPositions(businessId, fromPosition, browseCFrame.Position, nil)
+end
+
+function StoreNavigationService.FindRouteToCheckout(
+	businessId: string,
+	fromPosition: Vector3,
+	checkoutCFrame: CFrame
+): { CFrame }
+	local checkoutNode = StoreNavigationService.FindNodeByType(businessId, "Checkout")
+	return StoreNavigationService.FindRouteBetweenPositions(
+		businessId,
+		fromPosition,
+		checkoutCFrame.Position,
+		if checkoutNode then checkoutNode.nodeId else nil
+	)
+end
+
+function StoreNavigationService.FindRouteToExit(
+	businessId: string,
+	fromPosition: Vector3,
+	exitCFrame: CFrame
+): { CFrame }
+	local exitNode = StoreNavigationService.FindNodeByType(businessId, "Exit")
+		or StoreNavigationService.FindNodeByType(businessId, "Entrance")
+	return StoreNavigationService.FindRouteBetweenPositions(
+		businessId,
+		fromPosition,
+		exitCFrame.Position,
+		if exitNode then exitNode.nodeId else nil
+	)
+end
+
+function StoreNavigationService.GetAlternateNode(
+	businessId: string,
+	blockedNodeId: string,
+	currentPosition: Vector3
+): NavNode?
+	local graph = StoreNavigationService.BuildGraph(businessId)
+	local blocked = graph.nodes[blockedNodeId]
+	if not blocked then
+		return StoreNavigationService.FindNearestNode(businessId, currentPosition)
+	end
+
+	local best: NavNode? = nil
+	local bestDistance = math.huge
+
+	for _, node in graph.nodes do
+		if node.nodeId == blockedNodeId then
+			continue
+		end
+		for _, connectedId in blocked.connectedNodeIds do
+			if connectedId == node.nodeId then
+				local distance = (node.cframe.Position - currentPosition).Magnitude
+				if distance < bestDistance then
+					bestDistance = distance
+					best = node
+				end
+			end
+		end
+	end
+
+	return best or StoreNavigationService.FindNearestNode(businessId, currentPosition)
+end
+
+function StoreNavigationService:OnInit() end
+function StoreNavigationService:OnStart() end
+
+return StoreNavigationService

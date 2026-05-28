@@ -18,20 +18,49 @@ BusinessService.Disabled = false
 -- for testing
 local function createDefaultShelves(): { [string]: ShelfState }
 	return {
-		shelf_entry = {
-			id = "shelf_entry",
-			gpuId = "starter_gpu",
+		left_display_1 = {
+			id = "left_display_1",
+			gpuId = "fx_450",
 			stockAmount = 6,
 			maxStock = 12,
 			priceMultiplier = 1,
 		},
-		shelf_premium = {
-			id = "shelf_premium",
-			gpuId = nil,
-			stockAmount = 0,
-			maxStock = 8,
-			priceMultiplier = 1.15,
+		left_display_2 = {
+			id = "left_display_2",
+			gpuId = "fx_480",
+			stockAmount = 6,
+			maxStock = 12,
+			priceMultiplier = 1,
 		},
+		left_display_3 = {
+			id = "left_display_3",
+			gpuId = "fx_550",
+			stockAmount = 6,
+			maxStock = 12,
+			priceMultiplier = 1,
+		},
+		right_display_1 = {
+			id = "right_display_1",
+			gpuId = "fx_5500",
+			stockAmount = 6,
+			maxStock = 12,
+			priceMultiplier = 1,
+		},
+		right_display_2 = {
+			id = "right_display_2",
+			gpuId = "fx_6500",
+			stockAmount = 6,
+			maxStock = 12,
+			priceMultiplier = 1,
+		},
+		right_display_3 = {
+			id = "right_display_3",
+			gpuId = "fx_7500",
+			stockAmount = 6,
+			maxStock = 12,
+			priceMultiplier = 1,
+		},
+
 	}
 end
 
@@ -58,15 +87,22 @@ function BusinessService.CreateBusinessForPlayer(player: Player): BusinessState
 		store = {
 			shelves = createDefaultShelves(), -- mock shelves
 			checkoutQueueLength = 0,
+			checkoutQueueSlots = {},
 			open = true,
 		},
 		warehouse = {
 			inventory = {
-				starter_gpu = 24,
+				fx_450 = 24,
+				fx_480 = 12,
+				fx_550 = 12,
+				fx_5500 = 12,
+				fx_6500 = 12,
+				fx_7500 = 12,
 			},
 			capacity = 250,
-			usedCapacity = 24,
+			usedCapacity = 84,
 		},
+		customerSpawnBudget = 0,
 		staff = {},
 		staffTasks = {},
 		deliveries = {},

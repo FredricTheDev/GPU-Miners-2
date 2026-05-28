@@ -1,6 +1,5 @@
 --!strict
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local RunService = game:GetService("RunService")
 
 local BusinessTypes = require(ReplicatedStorage.Shared.Types.BusinessTypes)
 local RuntimeTypes = require(ReplicatedStorage.Shared.Types.RuntimeTypes)
@@ -8,10 +7,10 @@ local RuntimeTypes = require(ReplicatedStorage.Shared.Types.RuntimeTypes)
 type BusinessState = BusinessTypes.BusinessState
 
 type SimulationServiceType = RuntimeTypes.ModuleRuntimeType & {
-    _registry: any,
+	_registry: any,
 
-    _businessService: any?,
-    _economyService: any?,
+	_businessService: any?,
+	_economyService: any?,
 	_customerService: any?,
 	_staffService: any?,
 	_securityService: any?,
@@ -22,7 +21,7 @@ type SimulationServiceType = RuntimeTypes.ModuleRuntimeType & {
 	OnInit: (self: SimulationServiceType) -> (),
 	OnStart: (self: SimulationServiceType) -> (),
 
-    StepBusiness: (self: SimulationServiceType, business: BusinessState, deltaSeconds: number) -> (),
+	StepBusiness: (self: SimulationServiceType, business: BusinessState, deltaSeconds: number) -> (),
 	StepBusinessById: (self: SimulationServiceType, businessId: string, deltaSeconds: number) -> (),
 	StepAllBusinesses: (self: SimulationServiceType, deltaSeconds: number) -> (),
 }
@@ -32,13 +31,13 @@ local SimulationService = {} :: SimulationServiceType
 SimulationService.Name = "SimulationService"
 SimulationService.Priority = 0
 SimulationService.Dependencies = {
-    "BusinessService",
-    "CustomerService",
-    "EconomyService",
-    "LogisticsService",
-    "MiningService",
-    "SecurityService",
-    "StaffService",
+	"BusinessService",
+	"CustomerService",
+	"EconomyService",
+	"LogisticsService",
+	"MiningService",
+	"SecurityService",
+	"StaffService",
 }
 SimulationService.Disabled = false
 
@@ -48,9 +47,9 @@ local MAX_CATCHUP_STEPS = 3
 local running = false
 
 function SimulationService:Configure(registry)
-    self._registry = registry
+	self._registry = registry
 
-    self._businessService = registry.BusinessService
+	self._businessService = registry.BusinessService
 	self._economyService = registry.EconomyService
 	self._customerService = registry.CustomerService
 	self._staffService = registry.StaffService
@@ -61,18 +60,18 @@ end
 
 function SimulationService:OnInit() end
 
-function SimulationService:OnStart() 
-    if running then
-        return
-    end
+function SimulationService:OnStart()
+	if running then
+		return
+	end
 
-    running = true
+	running = true
 
-    task.spawn(function()
-        local lastTime = os.clock()
-        local accumulator = 0
+	task.spawn(function()
+		local lastTime = os.clock()
+		local accumulator = 0
 
-        while running do
+		while running do
 			local now = os.clock()
 			local frameDelta = now - lastTime
 			lastTime = now
@@ -102,12 +101,11 @@ function SimulationService:OnStart()
 
 			task.wait(0.1)
 		end
-    end)
+	end)
 end
 
 function SimulationService:StepBusiness(business: BusinessState, deltaSeconds: number)
-	print("Simulation is stepping businesses")
-        -- fixed order to prevent side effects
+	-- fixed order to prevent side effects
 	self._economyService.UpdateBusinessEconomy(business, deltaSeconds)
 	self._customerService.UpdateCustomers(business, deltaSeconds)
 	self._staffService.UpdateStaff(business, deltaSeconds)

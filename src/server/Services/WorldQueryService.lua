@@ -21,6 +21,53 @@ local function getCFrame(instance: Instance): CFrame?
 	return nil
 end
 
+local function hashString(value: string): number
+	local hash = 0
+	for index = 1, #value do
+		hash = (hash * 31 + string.byte(value, index)) % 100000
+	end
+	return hash
+end
+
+local function getNumberAttribute(instance: Instance?, attributeName: string, fallback: number): number
+	if not instance then
+		return fallback
+	end
+
+	local value = instance:GetAttribute(attributeName)
+	return if typeof(value) == "number" then value else fallback
+end
+
+local function getQueueDirection(instance: Instance?, baseCFrame: CFrame): Vector3
+	if instance then
+		local vectorAttribute = instance:GetAttribute("QueueDirection")
+		if typeof(vectorAttribute) == "Vector3" and vectorAttribute.Magnitude > 0.05 then
+			return vectorAttribute.Unit
+		end
+
+		local axisAttribute = instance:GetAttribute("QueueAxis")
+		if axisAttribute == "Forward" then
+			return baseCFrame.LookVector
+		elseif axisAttribute == "Right" then
+			return baseCFrame.RightVector
+		elseif axisAttribute == "Left" then
+			return -baseCFrame.RightVector
+		end
+	end
+
+	return -baseCFrame.LookVector
+end
+
+local function getScatteredCFrame(baseCFrame: CFrame, key: string, radius: number): CFrame
+	local hash = hashString(key)
+	local angle = math.rad(hash % 360)
+	local ring = math.floor(hash / 360) % 3
+	local distance = radius + ring * 0.85
+	local offset = baseCFrame.RightVector * math.cos(angle) * distance
+		+ baseCFrame.LookVector * math.sin(angle) * distance
+	return baseCFrame + offset
+end
+
 local DEFAULT_STORE_CENTER = CFrame.new(0, 4, 0)
 
 local WorldQueryService = {}
@@ -34,7 +81,10 @@ function WorldQueryService:OnStart() end
 
 function WorldQueryService.GetTaggedInstancesForBusiness(tag: string, businessId: string): { Instance }
 	local results = {}
-	for _, instance in CollectionService:GetTagged(tag) do
+	for _, instance in ipairs(CollectionService:GetTagged(tag)) do
+		if not instance:IsDescendantOf(workspace) then
+			continue
+		end
 		if instanceMatchesBusiness(instance, businessId) then
 			table.insert(results, instance)
 		end
@@ -43,25 +93,47 @@ function WorldQueryService.GetTaggedInstancesForBusiness(tag: string, businessId
 end
 
 function WorldQueryService.GetFirstTaggedCFrame(tag: string, businessId: string): CFrame?
-    for _, instance in WorldQueryService.GetTaggedInstancesForBusiness(tag, businessId) do
-        local cframe = getCFrame(instance)
-        if cframe then
-            return cframe
-        end
-    end
-    return nil
+	for _, instance in WorldQueryService.GetTaggedInstancesForBusiness(tag, businessId) do
+		local cframe = getCFrame(instance)
+		if cframe then
+			return cframe
+		end
+	end
+	return nil
 end
 
-function WorldQueryService.GetSpawnCFrame(businessId: string): CFrame
-    return WorldQueryService.GetFirstTaggedCFrame(WorldTags.CustomerSpawn, businessId) or DEFAULT_STORE_CENTER
+function WorldQueryService.GetSpawnCFrame(businessId: string, customerId: string?): CFrame
+	return WorldQueryService.GetFirstTaggedCFrame(WorldTags.CustomerSpawn, businessId) or DEFAULT_STORE_CENTER
+
+	-- local baseCFrame = WorldQueryService.GetFirstTaggedCFrame(WorldTags.CustomerSpawn, businessId) or DEFAULT_STORE_CENTER
+	-- if not customerId then
+	-- 	return baseCFrame
+	-- end
+
+	-- return getScatteredCFrame(baseCFrame, `{businessId}:{customerId}:spawn`, 2.5)
 end
 
 function WorldQueryService.GetExitCFrame(businessId: string): CFrame
-	return WorldQueryService.GetFirstTaggedCFrame(WorldTags.CustomerExit, businessId) or DEFAULT_STORE_CENTER + Vector3.new(0, 0, 30)
+	return WorldQueryService.GetFirstTaggedCFrame(WorldTags.CustomerExit, businessId)
+		or DEFAULT_STORE_CENTER + Vector3.new(0, 0, 30)
 end
 
-function WorldQueryService.GetCheckoutCFrame(businessId: string): CFrame
-	return WorldQueryService.GetFirstTaggedCFrame(WorldTags.CheckoutPoint, businessId) or DEFAULT_STORE_CENTER + Vector3.new(10, 0, 0)
+function WorldQueryService.GetCheckoutQueueCFrame(businessId: string, queueSlot: number): CFrame
+	local checkoutInstance: Instance? = nil
+	for _, instance in WorldQueryService.GetTaggedInstancesForBusiness(WorldTags.CheckoutPoint, businessId) do
+		if getCFrame(instance) then
+			checkoutInstance = instance
+			break
+		end
+	end
+
+	local baseCFrame = if checkoutInstance then getCFrame(checkoutInstance) :: CFrame else DEFAULT_STORE_CENTER
+	local spacing = getNumberAttribute(checkoutInstance, "QueueSpacing", 3)
+	local startOffset = getNumberAttribute(checkoutInstance, "QueueStartOffset", 2.5)
+	local queueDirection = getQueueDirection(checkoutInstance, baseCFrame)
+	local distance = startOffset + math.max(0, queueSlot - 1) * spacing
+	local position = baseCFrame.Position + queueDirection * distance
+	return CFrame.lookAt(position, baseCFrame.Position)
 end
 
 function WorldQueryService.GetShelfCFrame(businessId: string, shelfId: string): CFrame?
@@ -71,6 +143,37 @@ function WorldQueryService.GetShelfCFrame(businessId: string, shelfId: string): 
 		end
 	end
 	return WorldQueryService.GetFirstTaggedCFrame(WorldTags.BrowsePoint, businessId)
+end
+
+function WorldQueryService.GetShelfBrowseCFrame(businessId: string, shelfId: string, slotIndex: number): CFrame?
+	for _, instance in WorldQueryService.GetTaggedInstancesForBusiness(WorldTags.ShelfPoint, businessId) do
+		if instance:GetAttribute("ShelfId") == shelfId then
+			local shelfCFrame = getCFrame(instance)
+
+			if shelfCFrame then
+				local browseDistance = getNumberAttribute(instance, "BrowseDistance", 2.1)
+				local sideSpacing = getNumberAttribute(instance, "BrowseSideSpacing", 1.45)
+				local depthSpacing = getNumberAttribute(instance, "BrowseDepthSpacing", 0.25)
+
+				local centerSlot = math.ceil(7 / 2)
+				local sideSlot = slotIndex - centerSlot
+				local depthSlot = math.abs(sideSlot) % 2
+
+				local position = shelfCFrame.Position
+					+ shelfCFrame.LookVector * (browseDistance + depthSlot * depthSpacing)
+					+ shelfCFrame.RightVector * sideSlot * sideSpacing
+
+				return CFrame.lookAt(position, shelfCFrame.Position)
+			end
+		end
+	end
+
+	local fallbackCFrame = WorldQueryService.GetFirstTaggedCFrame(WorldTags.BrowsePoint, businessId)
+	if fallbackCFrame then
+		return fallbackCFrame
+	end
+
+	return nil
 end
 
 function WorldQueryService.GetOrCreateCustomerFolder(): Folder
@@ -85,7 +188,11 @@ function WorldQueryService.GetOrCreateCustomerFolder(): Folder
 	return folder
 end
 
-function WorldQueryService.HasLineOfSight(fromPosition: Vector3, toInstance: Instance, ignoreList: { Instance }): boolean
+function WorldQueryService.HasLineOfSight(
+	fromPosition: Vector3,
+	toInstance: Instance,
+	ignoreList: { Instance }
+): boolean
 	local targetCFrame = getCFrame(toInstance)
 	if not targetCFrame then
 		return false
@@ -102,6 +209,30 @@ end
 
 function WorldQueryService.GetCFrame(instance: Instance): CFrame?
 	return getCFrame(instance)
+end
+
+function WorldQueryService.GetNavigationNodeInstances(businessId: string): { Instance }
+	local results: { Instance } = {}
+	local seen: { [Instance]: boolean } = {}
+
+	for _, tag in
+		{
+			WorldTags.StoreNavNode,
+			WorldTags.EntranceNode,
+			WorldTags.ExitNode,
+			WorldTags.CheckoutNode,
+			WorldTags.ShelfNavNode,
+		}
+	do
+		for _, instance in WorldQueryService.GetTaggedInstancesForBusiness(tag, businessId) do
+			if not seen[instance] then
+				seen[instance] = true
+				table.insert(results, instance)
+			end
+		end
+	end
+
+	return results
 end
 
 return WorldQueryService

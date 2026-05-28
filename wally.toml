@@ -16,6 +16,7 @@ Sera = "enzzyfrenzzy/sera@0.0.2"
 Module3d = "kumarion/module3d@0.0.2"
 Maid = "coiorevent8/maid@3.4.0"
 Component = "sleitnick/component@2.4.8"
+SimplePath = "untakeranonplay/simplepath@0.1.1"
 
 [server-dependencies]
 ProfileStore = "ddashdev/profilestore@1.0.4"

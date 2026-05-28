@@ -16,24 +16,24 @@ type StaffTaskType = BusinessTypes.StaffTaskType
 type SecurityServiceType = RuntimeTypes.ModuleRuntimeType & {
 	_registry: any,
 
-    _storeService: any?,
-    _staffService: any?,
-    _worldQueryService: any?,
+	_storeService: any?,
+	_staffService: any?,
+	_worldQueryService: any?,
 
 	Configure: (self: SecurityServiceType, registry: any) -> (),
 	OnInit: (self: SecurityServiceType) -> (),
 	OnStart: (self: SecurityServiceType) -> (),
 
-    CalculateSecurityLevel: (business: BusinessState) -> number,
-    TryDetectTheft: (business: BusinessState, customer: CustomerRuntimeState) -> boolean,
-    UpdateSecurity: (business: BusinessState, deltaSeconds: number) -> (),
-    GetCustomerObservedScore: (businessId: string, customerModel: Model) -> number,
-    ResolvePhysicalTheftAttempt: (
-        business: BusinessState,
-        customer: CustomerRuntimeState,
-        customerModel: Model,
-        observedScore: number
-    ) -> boolean
+	CalculateSecurityLevel: (business: BusinessState) -> number,
+	TryDetectTheft: (business: BusinessState, customer: CustomerRuntimeState) -> boolean,
+	UpdateSecurity: (business: BusinessState, deltaSeconds: number) -> (),
+	GetCustomerObservedScore: (businessId: string, customerModel: Model) -> number,
+	ResolvePhysicalTheftAttempt: (
+		business: BusinessState,
+		customer: CustomerRuntimeState,
+		customerModel: Model,
+		observedScore: number
+	) -> boolean,
 }
 
 local SecurityService = {} :: SecurityServiceType
@@ -45,7 +45,7 @@ local DEFAULT_CAMERA_FOV_DEGREES = 70
 
 SecurityService.Name = "SecurityService"
 SecurityService.Priority = 0
-SecurityService.Dependencies = { "" }
+SecurityService.Dependencies = {}
 SecurityService.Disabled = false
 
 local function countCustomers(business: BusinessState): number
@@ -57,13 +57,13 @@ local function countCustomers(business: BusinessState): number
 end
 
 local function countGuards(business: BusinessState): number
-    local guards = 0
-    for _, staffMember in business.staff do
-        if staffMember.role == "Guard" then
-            guards += 1
-        end
-    end
-    return guards
+	local guards = 0
+	for _, staffMember in business.staff do
+		if staffMember.role == "Guard" then
+			guards += 1
+		end
+	end
+	return guards
 end
 
 local function getObserverScore(
@@ -104,9 +104,9 @@ end
 function SecurityService:Configure(registry)
 	self._registry = registry
 
-    self._storeService = registry.StoreService
-    self._staffService = registry.StaffService
-    self._worldQueryService = registry.WorldQueryService
+	self._storeService = registry.StoreService
+	self._staffService = registry.StaffService
+	self._worldQueryService = registry.WorldQueryService
 end
 
 function SecurityService:OnInit() end
@@ -114,36 +114,40 @@ function SecurityService:OnInit() end
 function SecurityService:OnStart() end
 
 function SecurityService.CalculateSecurityLevel(business: BusinessState): number
-    local guardContribution = countGuards(business) * 15
-    local cameraCount = #SecurityService._worldQueryService.GetTaggedInstancesForBusiness(WorldTags.SecurityCamera, business.id)
+	local guardContribution = countGuards(business) * 15
+	local cameraCount =
+		#SecurityService._worldQueryService.GetTaggedInstancesForBusiness(WorldTags.SecurityCamera, business.id)
 	local physicalCameraCoverage = math.clamp(cameraCount * 0.15, 0, 1)
 	local cameraCoverage = math.max(business.security.cameraCoverage, physicalCameraCoverage)
 	local cameraContribution = cameraCoverage * 35
-    local alarmContribution = business.security.alarmLevel * 10
-    return math.clamp(10 + guardContribution + cameraContribution + alarmContribution, 0, 100)
+	local alarmContribution = business.security.alarmLevel * 10
+	return math.clamp(10 + guardContribution + cameraContribution + alarmContribution, 0, 100)
 end
 
 function SecurityService.TryDetectTheft(business: BusinessState, customer: CustomerRuntimeState): boolean
-    local guardCount = countGuards(business)
-    local crowdDensity = math.clamp((business.store.checkoutQueueLength + Sift.Dictionary.count(business.customers)) / 20, 0, 2)
-    local theftChance = BusinessMath.CalculateTheftChance(
-        business.security.securityLevel,
-        crowdDensity,
-        customer.profile.theftRiskTolerance
-    )
+	local guardCount = countGuards(business)
+	local crowdDensity =
+		math.clamp((business.store.checkoutQueueLength + Sift.Dictionary.count(business.customers)) / 20, 0, 2)
+	local theftChance = BusinessMath.CalculateTheftChance(
+		business.security.securityLevel,
+		crowdDensity,
+		customer.profile.theftRiskTolerance
+	)
 
-    if math.random() > theftChance then
-        return false
-    end
+	if math.random() > theftChance then
+		return false
+	end
 
-    local detectionChance = math.clamp(0.15 + guardCount * 0.18 + business.security.cameraCoverage * 0.35, 0, 0.95)
+	local detectionChance = math.clamp(0.15 + guardCount * 0.18 + business.security.cameraCoverage * 0.35, 0, 0.95)
 	return math.random() < detectionChance
 end
 
 function SecurityService.GetCustomerObservedScore(businessId: string, customerModel: Model): number
 	local score = 0
 
-	for _, staffInstance in SecurityService._worldQueryService.GetTaggedInstancesForBusiness(WorldTags.StaffNpc, businessId) do
+	for _, staffInstance in
+		SecurityService._worldQueryService.GetTaggedInstancesForBusiness(WorldTags.StaffNpc, businessId)
+	do
 		local role = staffInstance:GetAttribute("Role")
 		if role == "Guard" or role == "Cashier" or role == nil then
 			local rangeStuds = staffInstance:GetAttribute("ViewRange")
@@ -158,7 +162,9 @@ function SecurityService.GetCustomerObservedScore(businessId: string, customerMo
 		end
 	end
 
-	for _, cameraInstance in SecurityService._worldQueryService.GetTaggedInstancesForBusiness(WorldTags.SecurityCamera, businessId) do
+	for _, cameraInstance in
+		SecurityService._worldQueryService.GetTaggedInstancesForBusiness(WorldTags.SecurityCamera, businessId)
+	do
 		if cameraInstance:GetAttribute("Enabled") ~= false then
 			local rangeStuds = cameraInstance:GetAttribute("ViewRange")
 			local fovDegrees = cameraInstance:GetAttribute("ViewFovDegrees")
@@ -215,35 +221,34 @@ function SecurityService.ResolvePhysicalTheftAttempt(
 end
 
 function SecurityService.UpdateSecurity(business: BusinessState, deltaSeconds: number)
-    business.security.securityLevel = SecurityService.CalculateSecurityLevel(business)
+	business.security.securityLevel = SecurityService.CalculateSecurityLevel(business)
 
-    for customerId, customer in business.customers do
-        if customer.physicalModelName ~= nil then
-            continue
-        end
-        
-        if customer.state == "Stealing" and not business.security.activeThefts[customerId] then
-            business.security.activeThefts[customerId] = true
+	for customerId, customer in business.customers do
+		if customer.physicalModelName ~= nil then
+			continue
+		end
 
-            local detected = SecurityService.TryDetectTheft(business, customer)
-            if detected then
-                business.security.lastTheftDetectedAt = os.clock()
-                SecurityService._staffService.CreateTask(business, "ChaseThief", 90, customerId, 15)
+		if customer.state == "Stealing" and not business.security.activeThefts[customerId] then
+			business.security.activeThefts[customerId] = true
 
-                -- todo: tell client that the thief was stopped
-                -- todo: allow user to report caught thiefs, so if they come back they can be kicked out
+			local detected = SecurityService.TryDetectTheft(business, customer)
+			if detected then
+				business.security.lastTheftDetectedAt = os.clock()
+				SecurityService._staffService.CreateTask(business, "ChaseThief", 90, customerId, 15)
 
-            else
-                local shelfId = customer.targetShelfId
-                if shelfId then
-                    SecurityService._storeService.RemoveStockAfterPurchase(business, shelfId)
-                end
-                business.customers[customerId] = nil
-            end
-        elseif customer.state ~= "Stealing" then
-            business.security.activeThefts[customerId] = nil
-        end
-    end
+				-- todo: tell client that the thief was stopped
+				-- todo: allow user to report caught thiefs, so if they come back they can be kicked out
+			else
+				local shelfId = customer.targetShelfId
+				if shelfId then
+					SecurityService._storeService.RemoveStockAfterPurchase(business, shelfId)
+				end
+				business.customers[customerId] = nil
+			end
+		elseif customer.state ~= "Stealing" then
+			business.security.activeThefts[customerId] = nil
+		end
+	end
 end
 
 return SecurityService

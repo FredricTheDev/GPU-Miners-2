@@ -48,54 +48,54 @@ function AvatarService:OnInit() end
 function AvatarService:OnStart() end
 
 function AvatarService.WarmFriendCacheAsync(ownerUserId: number)
-    local cache = getFriendCache(ownerUserId)
-    if cache.loaded then
-        return
-    end
+	local cache = getFriendCache(ownerUserId)
+	if cache.loaded then
+		return
+	end
 
-    local success, pagesOrError = pcall(function()
-        return Players:GetFriendsAsync(ownerUserId)
-    end)
+	local success, pagesOrError = pcall(function()
+		return Players:GetFriendsAsync(ownerUserId)
+	end)
 
-    if not success then
-        warn(`Failed to load friends for user {ownerUserId}: ${pagesOrError}`)
-        cache.loaded = true
-        return
-    end
+	if not success then
+		warn(`Failed to load friends for user {ownerUserId}: ${pagesOrError}`)
+		cache.loaded = true
+		return
+	end
 
-    local pages = pagesOrError
-    while true do
-        for _, friendInfo in pages:GetCurrentPage() do
-            local userId = friendInfo.Id
-            if typeof(userId) == "number" then
-                table.insert(cache.userIds, userId)
-            end
-        end
+	local pages = pagesOrError
+	while true do
+		for _, friendInfo in pages:GetCurrentPage() do
+			local userId = friendInfo.Id
+			if typeof(userId) == "number" then
+				table.insert(cache.userIds, userId)
+			end
+		end
 
-        if pages.IsFinished then
-            break
-        end
+		if pages.IsFinished then
+			break
+		end
 
-        local advanceSuccess, advanceError = pcall(function()
-            pages:AdvanceToNextPageAsync()
-        end)
+		local advanceSuccess, advanceError = pcall(function()
+			pages:AdvanceToNextPageAsync()
+		end)
 
-        if not advanceSuccess then
+		if not advanceSuccess then
 			warn(`Failed to advance friend pages for user {ownerUserId}: {advanceError}`)
 			break
 		end
-    end
+	end
 
-    cache.loaded = true
+	cache.loaded = true
 end
 
 function AvatarService.GetAvatarUserIdForOwner(ownerUserId: number): number
-    local cache = getFriendCache(ownerUserId)
+	local cache = getFriendCache(ownerUserId)
 	if not cache.loaded then
 		task.spawn(AvatarService.WarmFriendCacheAsync, ownerUserId)
 	end
 
-    if #cache.userIds > 0 then
+	if #cache.userIds > 0 then
 		local userId = cache.userIds[cache.nextIndex]
 		cache.nextIndex += 1
 		if cache.nextIndex > #cache.userIds then
@@ -108,9 +108,9 @@ function AvatarService.GetAvatarUserIdForOwner(ownerUserId: number): number
 end
 
 function AvatarService.CreateCustomerModelAsync(avatarUserId: number, modelName: string): Model?
-    local success, modelOrError = pcall(function()
-		local description = Players:GetHumanoidDescriptionFromUserIdAsync(avatarUserId)
-		return Players:CreateHumanoidModelFromDescriptionAsync(description, Enum.HumanoidRigType.R15)
+	local success, modelOrError = pcall(function()
+		local description = Players:GetHumanoidDescriptionFromUserIdAsync(1)
+		return Players:CreateHumanoidModelFromDescriptionAsync(description, Enum.HumanoidRigType.R6)
 	end)
 
 	if success then
@@ -125,7 +125,7 @@ function AvatarService.CreateCustomerModelAsync(avatarUserId: number, modelName:
 		return model
 	end
 
-    warn(`Failed to create customer avatar {avatarUserId}: {modelOrError}`)
+	warn(`Failed to create customer avatar {avatarUserId}: {modelOrError}`)
 	return nil
 end
 

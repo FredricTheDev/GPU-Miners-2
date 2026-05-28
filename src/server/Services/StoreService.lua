@@ -16,9 +16,12 @@ StoreService.Disabled = false
 
 -- mock for testing until have real gpus
 local BASE_GPU_PRICES: { [string]: number } = {
-	starter_gpu = 300,
-	mid_gpu = 750,
-	high_gpu = 1400,
+	fx_450 = 300,
+	fx_480 = 750,
+	fx_550 = 1400,
+	fx_5500 = 1600,
+	fx_6500 = 1800,
+	fx_7500 = 2200,
 }
 
 function StoreService:OnInit() end
@@ -31,6 +34,35 @@ end
 
 function StoreService.GetShelf(business: BusinessState, shelfId: string): ShelfState?
 	return business.store.shelves[shelfId]
+end
+
+function StoreService.GetStockedShelves(business: BusinessState): { ShelfState }
+	local shelves = {}
+
+	for _, shelf in business.store.shelves do
+		if shelf.gpuId ~= nil and shelf.stockAmount > 0 then
+			table.insert(shelves, shelf)
+		end
+	end
+
+	return shelves
+end
+
+function StoreService.FindShelfByGpuId(business: BusinessState, gpuId: string): ShelfState?
+	local bestShelf: ShelfState? = nil
+	local bestPrice = math.huge
+
+	for _, shelf in business.store.shelves do
+		if shelf.gpuId == gpuId and shelf.stockAmount > 0 then
+			local price = StoreService.GetShelfSellPrice(business, shelf)
+			if price and price < bestPrice then
+				bestShelf = shelf
+				bestPrice = price
+			end
+		end
+	end
+
+	return bestShelf
 end
 
 function StoreService.GetShelfSellPrice(business: BusinessState, shelf: ShelfState): number?
@@ -59,67 +91,71 @@ function StoreService.FindBestShelfForCustomer(business: BusinessState, preferre
 
 	for _, shelf in business.store.shelves do
 		if shelf.gpuId ~= nil and shelf.stockAmount > 0 then
-            if shelf.gpuId == preferredGpuId then
-                return shelf
-            end
-            fallbackShelf = fallbackShelf or shelf
-        end
+			if shelf.gpuId == preferredGpuId then
+				return shelf
+			end
+			fallbackShelf = fallbackShelf or shelf
+		end
 	end
 
-    return fallbackShelf
+	return fallbackShelf
 end
 
-function StoreService.CanPurchaseFromShelf(business: BusinessState, shelfId: string, budget: number): (boolean, string?, number?)
-    local shelf = business.store.shelves[shelfId]
-    if not shelf or not shelf.gpuId then
-        return false, "Shelf has no GPU assigned", nil
-    end
+function StoreService.CanPurchaseFromShelf(
+	business: BusinessState,
+	shelfId: string,
+	budget: number
+): (boolean, string?, number?)
+	local shelf = business.store.shelves[shelfId]
+	if not shelf or not shelf.gpuId then
+		return false, "Shelf has no GPU assigned", nil
+	end
 
-    if shelf.stockAmount <= 0 then
-        return false, "Shelf is out of stock", nil
-    end
+	if shelf.stockAmount <= 0 then
+		return false, "Shelf is out of stock", nil
+	end
 
-    local price = StoreService.GetShelfSellPrice(business, shelf)
-    if not price or price > budget then
-        return false, "Customer cannot afford GPU", price
-    end
+	local price = StoreService.GetShelfSellPrice(business, shelf)
+	if not price or price > budget then
+		return false, "Customer cannot afford GPU", price
+	end
 
-    return true, nil, price
+	return true, nil, price
 end
 
 function StoreService.RemoveStockAfterPurchase(business: BusinessState, shelfId: string): string?
-    local shelf = business.store.shelves[shelfId]
-    if not shelf or not shelf.gpuId or shelf.stockAmount <= 0 then
-        return nil
-    end
+	local shelf = business.store.shelves[shelfId]
+	if not shelf or not shelf.gpuId or shelf.stockAmount <= 0 then
+		return nil
+	end
 
-    local gpuId = shelf.gpuId
-    shelf.stockAmount -= 1
-    return gpuId
+	local gpuId = shelf.gpuId
+	shelf.stockAmount -= 1
+	return gpuId
 end
 
 function StoreService.SetGpuPriceMultiplier(business: BusinessState, shelfId: string, priceMultiplier: number): boolean
-    local shelf = business.store.shelves[shelfId]
-    if not shelf then
-        return false
-    end
+	local shelf = business.store.shelves[shelfId]
+	if not shelf then
+		return false
+	end
 
-    shelf.priceMultiplier = math.clamp(priceMultiplier, 0.5, 3)
-    return true
+	shelf.priceMultiplier = math.clamp(priceMultiplier, 0.5, 3)
+	return true
 end
 
 function StoreService.RestockShelfFromInventory(business: BusinessState, shelfId: string): number
-    local shelf = business.store.shelves[shelfId]
-    if not shelf or not shelf.gpuId then
-        return 0
-    end
+	local shelf = business.store.shelves[shelfId]
+	if not shelf or not shelf.gpuId then
+		return 0
+	end
 
-    local available = business.warehouse.inventory[shelf.gpuId] or 0
-    local needed = shelf.maxStock - shelf.stockAmount
-    local moved = math.min(available, needed)
-    if moved <= 0 then
-        return 0
-    end
+	local available = business.warehouse.inventory[shelf.gpuId] or 0
+	local needed = shelf.maxStock - shelf.stockAmount
+	local moved = math.min(available, needed)
+	if moved <= 0 then
+		return 0
+	end
 
 	business.warehouse.inventory[shelf.gpuId] = available - moved
 	shelf.stockAmount += moved
