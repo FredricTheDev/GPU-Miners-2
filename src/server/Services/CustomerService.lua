@@ -17,6 +17,12 @@ type CustomerRuntimeState = BusinessTypes.CustomerRuntimeState
 type ShelfState = BusinessTypes.ShelfState
 type ShoppingGoal = BusinessTypes.ShoppingGoal
 
+type CheckoutQueueEntry = {
+	customerId: string,
+	slot: number,
+	distance: number?,
+}
+
 type CustomerServiceType = RuntimeTypes.ModuleRuntimeType & {
 	_registry: any,
 
@@ -56,7 +62,9 @@ type CustomerServiceType = RuntimeTypes.ModuleRuntimeType & {
 	) -> "Cart" | "Ignore" | "Steal" | "Leave",
 	HasCartItems: (businessId: string, customerId: string) -> boolean,
 	EnterPhysicalCheckoutQueue: (businessId: string, customerId: string) -> boolean,
+	RebalancePhysicalCheckoutQueue: (businessId: string) -> (),
 	GetCheckoutQueueSlot: (businessId: string, customerId: string) -> number,
+	GetCheckoutQueueJoinSlot: (businessId: string) -> number,
 	LeavePhysicalCheckoutQueue: (businessId: string, customerId: string) -> (),
 }
 
@@ -75,7 +83,7 @@ local MAX_BROWSE_STOPS = 6
 
 local MIN_SPAWN_INTERVAL = 15
 local MAX_SPAWN_INTERVAL = 30
-local MAX_ACTIVE_CUSTOMERS = 1
+local MAX_ACTIVE_CUSTOMERS = 3
 
 local GPU_GOAL_FIT: { [string]: { [string]: number } } = {
 	fx_450 = {
@@ -265,8 +273,60 @@ local function countCheckoutQueueSlots(business: BusinessState): number
 	return count
 end
 
+local function getFlatDistance(a: Vector3, b: Vector3): number
+	return Vector3.new(a.X - b.X, 0, a.Z - b.Z).Magnitude
+end
+
+local function getCustomerPosition(businessId: string, customerId: string): Vector3?
+	for _, instance in CollectionService:GetTagged(WorldTags.Customer) do
+		if instance:GetAttribute("BusinessId") ~= businessId then
+			continue
+		end
+		if instance:GetAttribute("CustomerId") ~= customerId then
+			continue
+		end
+
+		local cframe = WorldQueryService.GetCFrame(instance)
+		if cframe then
+			return cframe.Position
+		end
+	end
+
+	return nil
+end
+
+local function publishCheckoutQueueSlots(business: BusinessState)
+	local slots = ensureCheckoutQueueSlots(business)
+
+	for _, instance in CollectionService:GetTagged(WorldTags.Customer) do
+		if instance:GetAttribute("BusinessId") ~= business.id then
+			continue
+		end
+
+		local customerId = instance:GetAttribute("CustomerId")
+		if typeof(customerId) ~= "string" then
+			continue
+		end
+
+		instance:SetAttribute("CheckoutQueueSlot", slots[customerId])
+		instance:SetAttribute("CheckoutQueueLength", business.store.checkoutQueueLength)
+	end
+end
+
+local function applyCheckoutQueueEntries(business: BusinessState, entries: { CheckoutQueueEntry })
+	local slots = ensureCheckoutQueueSlots(business)
+	table.clear(slots)
+
+	for index, entry in entries do
+		slots[entry.customerId] = index
+	end
+
+	business.store.checkoutQueueLength = #entries
+	publishCheckoutQueueSlots(business)
+end
+
 local function compactCheckoutQueueSlots(business: BusinessState)
-	local entries = {}
+	local entries: { CheckoutQueueEntry } = {}
 	for customerId, slot in ensureCheckoutQueueSlots(business) do
 		table.insert(entries, {
 			customerId = customerId,
@@ -278,13 +338,36 @@ local function compactCheckoutQueueSlots(business: BusinessState)
 		return left.slot < right.slot
 	end)
 
-	local slots = ensureCheckoutQueueSlots(business)
-	table.clear(slots)
-	for index, entry in entries do
-		slots[entry.customerId] = index
+	applyCheckoutQueueEntries(business, entries)
+end
+
+local function rebalanceCheckoutQueueSlotsByDistance(business: BusinessState)
+	local checkoutCFrame = WorldQueryService.GetCheckoutQueueCFrame(business.id, 1)
+	local entries: { CheckoutQueueEntry } = {}
+
+	for customerId, slot in ensureCheckoutQueueSlots(business) do
+		local position = getCustomerPosition(business.id, customerId)
+		table.insert(entries, {
+			customerId = customerId,
+			slot = slot,
+			distance = if position then getFlatDistance(position, checkoutCFrame.Position) else math.huge,
+		})
 	end
 
-	business.store.checkoutQueueLength = #entries
+	table.sort(entries, function(left, right)
+		local leftDistance = left.distance or math.huge
+		local rightDistance = right.distance or math.huge
+
+		if leftDistance == rightDistance then
+			if left.slot == right.slot then
+				return left.customerId < right.customerId
+			end
+			return left.slot < right.slot
+		end
+		return leftDistance < rightDistance
+	end)
+
+	applyCheckoutQueueEntries(business, entries)
 end
 
 local function getTargetCustomers(demand: number): number
@@ -563,8 +646,17 @@ function CustomerService.EnterPhysicalCheckoutQueue(businessId: string, customer
 	end
 
 	customer.state = "Queueing"
-	business.store.checkoutQueueLength = countCheckoutQueueSlots(business)
+	rebalanceCheckoutQueueSlotsByDistance(business)
 	return true
+end
+
+function CustomerService.RebalancePhysicalCheckoutQueue(businessId: string)
+	local business = CustomerService._registry.BusinessService.GetBusiness(businessId)
+	if not business then
+		return
+	end
+
+	rebalanceCheckoutQueueSlotsByDistance(business)
 end
 
 function CustomerService.GetCheckoutQueueSlot(businessId: string, customerId: string): number
@@ -574,6 +666,15 @@ function CustomerService.GetCheckoutQueueSlot(businessId: string, customerId: st
 	end
 
 	return ensureCheckoutQueueSlots(business)[customerId] or 1
+end
+
+function CustomerService.GetCheckoutQueueJoinSlot(businessId: string): number
+	local business = CustomerService._registry.BusinessService.GetBusiness(businessId)
+	if not business then
+		return 1
+	end
+
+	return countCheckoutQueueSlots(business) + 1
 end
 
 function CustomerService.LeavePhysicalCheckoutQueue(businessId: string, customerId: string)

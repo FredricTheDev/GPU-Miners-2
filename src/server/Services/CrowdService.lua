@@ -105,6 +105,28 @@ local function getRoot(model: Model): BasePart?
 	return if root and root:IsA("BasePart") then root else nil
 end
 
+local function getFlatDistance(a: Vector3, b: Vector3): number
+	return Vector3.new(a.X - b.X, 0, a.Z - b.Z).Magnitude
+end
+
+local function getFlatDirection(fromPosition: Vector3, toPosition: Vector3): Vector3?
+	local delta = Vector3.new(toPosition.X - fromPosition.X, 0, toPosition.Z - fromPosition.Z)
+	if delta.Magnitude < 0.05 then
+		return nil
+	end
+	return delta.Unit
+end
+
+local function getCustomerId(model: Model): string?
+	local customerId = model:GetAttribute("CustomerId")
+	return if typeof(customerId) == "string" then customerId else nil
+end
+
+local function getBusinessId(model: Model): string?
+	local businessId = model:GetAttribute("BusinessId")
+	return if typeof(businessId) == "string" then businessId else nil
+end
+
 local function cleanExpired<T>(slots: { [number]: T }, isExpired: (T) -> boolean)
 	for index, reservation in slots do
 		if isExpired(reservation) then
@@ -290,11 +312,6 @@ function CrowdService.ReserveCheckoutSlot(
 	preferredSlot: number?,
 	lifetimeSeconds: number?
 ): number?
-	local checkoutSlot = customerCheckoutSlots[customerId]
-	if checkoutSlot then
-		return checkoutSlot.slotIndex
-	end
-
 	local key = getCheckoutReservationKey(businessId)
 	local slots = checkoutReservations[key]
 
@@ -308,6 +325,47 @@ function CrowdService.ReserveCheckoutSlot(
 	end)
 
 	local now = os.clock()
+	local checkoutSlot = customerCheckoutSlots[customerId]
+	if checkoutSlot and checkoutSlot.businessKey == key then
+		local reservation = slots[checkoutSlot.slotIndex]
+		local ownsCurrentSlot = reservation ~= nil and reservation.customerId == customerId
+
+		if preferredSlot == nil or preferredSlot == checkoutSlot.slotIndex then
+			if ownsCurrentSlot and reservation then
+				reservation.expiresAt = now + (lifetimeSeconds or 45)
+				return checkoutSlot.slotIndex
+			end
+
+			customerCheckoutSlots[customerId] = nil
+		elseif ownsCurrentSlot then
+			slots[checkoutSlot.slotIndex] = nil
+			customerCheckoutSlots[customerId] = nil
+		end
+	elseif checkoutSlot then
+		customerCheckoutSlots[customerId] = nil
+	end
+
+	if preferredSlot then
+		local slotIndex = math.clamp(preferredSlot, 1, CHECKOUT_SLOT_COUNT)
+		local reservation = slots[slotIndex]
+
+		if reservation and reservation.customerId ~= customerId then
+			customerCheckoutSlots[reservation.customerId] = nil
+		end
+
+		slots[slotIndex] = {
+			customerId = customerId,
+			expiresAt = now + (lifetimeSeconds or 45),
+		}
+
+		customerCheckoutSlots[customerId] = {
+			businessKey = key,
+			slotIndex = slotIndex,
+		}
+
+		return slotIndex
+	end
+
 	local startIndex = preferredSlot or (hashString(`{businessId}:{customerId}`) % CHECKOUT_SLOT_COUNT + 1)
 
 	for offset = 0, CHECKOUT_SLOT_COUNT - 1 do

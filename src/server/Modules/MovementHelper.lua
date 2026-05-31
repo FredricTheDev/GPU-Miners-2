@@ -41,12 +41,13 @@ export type MovementController = {
 	debug: any?,
 
 	SetRoute: (self: MovementController, waypoints: { CFrame }) -> (),
-	MoveAlongRoute: (self: MovementController, getRunning: () -> boolean) -> boolean,
+	MoveAlongRoute: (self: MovementController, getRunning: () -> boolean, finalReachDistance: number?) -> boolean,
 	MoveToTarget: (
 		self: MovementController,
 		targetCFrame: CFrame,
 		buildRoute: (fromPosition: Vector3) -> { CFrame },
-		getRunning: () -> boolean
+		getRunning: () -> boolean,
+		finalReachDistance: number?
 	) -> boolean,
 }
 
@@ -62,16 +63,16 @@ local LOOP_INTERVAL = 0.1
 local INTERSECTION_PAUSE_MIN = 0.15
 local INTERSECTION_PAUSE_MAX = 0.45
 local SKIP_CLOSE_NODE_DISTANCE = 6
-local BAD_NODE_EXTRA_DISTANCE = 2
 local DIRECT_TARGET_DISTANCE = 18
 local ROUTE_WAYPOINT_REACH_DISTANCE = 2.35
 local FINAL_REACH_DISTANCE = 2.35
 local ARRIVAL_HYSTERESIS_DISTANCE = 1.1
 
-local ROUTE_GUIDE_ADVANCE_DISTANCE = 5
-local ROUTE_CORNER_CUT_DISTANCE = 5.5
-local ROUTE_LANE_HALF_WIDTH = 1.25
+local ROUTE_GUIDE_ADVANCE_DISTANCE = 5.75
+local ROUTE_CORNER_CUT_DISTANCE = 7
+local ROUTE_LANE_HALF_WIDTH = 1.5
 local DIRECT_STEER_TIMEOUT_MULTIPLIER = 2.5
+local FINAL_WAYPOINT_EPSILON = 0.5
 
 local function hashString(value: string): number
 	local hash = 0
@@ -91,20 +92,18 @@ local function buildPersonality(customerId: string): MovementPersonality
 	}
 end
 
+local function getFlatDistance(a: Vector3, b: Vector3): number
+	return Vector3.new(a.X - b.X, 0, a.Z - b.Z).Magnitude
+end
+
 local function pruneRoute(waypoints: { CFrame }, fromPosition: Vector3, finalPosition: Vector3): { CFrame }
 	local pruned = table.clone(waypoints)
 
 	while #pruned > 1 do
 		local firstPosition = pruned[1].Position
+		local distanceToFirst = getFlatDistance(firstPosition, fromPosition)
 
-		local distanceToFirst = (firstPosition - fromPosition).Magnitude
-		local currentDistanceToGoal = (finalPosition - fromPosition).Magnitude
-		local firstDistanceToGoal = (finalPosition - firstPosition).Magnitude
-
-		local firstIsAlreadyClose = distanceToFirst <= SKIP_CLOSE_NODE_DISTANCE
-		local firstMovesAwayFromGoal = firstDistanceToGoal > currentDistanceToGoal + BAD_NODE_EXTRA_DISTANCE
-
-		if firstIsAlreadyClose or firstMovesAwayFromGoal then
+		if distanceToFirst <= SKIP_CLOSE_NODE_DISTANCE then
 			table.remove(pruned, 1)
 		else
 			break
@@ -114,7 +113,25 @@ local function pruneRoute(waypoints: { CFrame }, fromPosition: Vector3, finalPos
 	return pruned
 end
 
-local function canUseDirectTarget(fromPosition: Vector3, targetPosition: Vector3): boolean
+local function ensureFinalWaypoint(waypoints: { CFrame }, finalCFrame: CFrame): { CFrame }
+	local route = table.clone(waypoints)
+
+	if #route == 0 then
+		table.insert(route, finalCFrame)
+		return route
+	end
+
+	local lastPosition = route[#route].Position
+	if (lastPosition - finalCFrame.Position).Magnitude > FINAL_WAYPOINT_EPSILON then
+		table.insert(route, finalCFrame)
+	else
+		route[#route] = finalCFrame
+	end
+
+	return route
+end
+
+local function _canUseDirectTarget(fromPosition: Vector3, targetPosition: Vector3): boolean
 	return (fromPosition - targetPosition).Magnitude <= DIRECT_TARGET_DISTANCE
 end
 
@@ -132,7 +149,7 @@ local function getStableLaneOffset(customerId: string, width: number): number
 	return (alpha - 0.5) * width
 end
 
-local function getSoftRouteTarget(
+local function _getSoftRouteTarget(
 	customerId: string,
 	currentPosition: Vector3,
 	targetPosition: Vector3,
@@ -154,8 +171,10 @@ local function getSoftRouteTarget(
 	return targetPosition + right * offset
 end
 
-local function getFlatDistance(a: Vector3, b: Vector3): number
-	return Vector3.new(a.X - b.X, 0, a.Z - b.Z).Magnitude
+local function debugStatus(debug: any?, text: string)
+	if debug and debug.SetStatus then
+		debug:SetStatus(text)
+	end
 end
 
 local function getFlatDirection(fromPosition: Vector3, toPosition: Vector3): Vector3?
@@ -178,10 +197,10 @@ local function getCustomerLaneOffset(customerId: string, routeIndex: number): nu
 	return (alpha * 2 - 1) * ROUTE_LANE_HALF_WIDTH
 end
 
-local MovementController = {}
-MovementController.__index = MovementController
+local MovementHelper = {}
+MovementHelper.__index = MovementHelper
 
-function MovementController.new(
+function MovementHelper.new(
 	model: Model,
 	businessId: string,
 	customerId: string,
@@ -190,7 +209,7 @@ function MovementController.new(
 	path: SimplePathLike,
 	baseWalkSpeed: number,
 	debug: any?
-): MovementController
+): MovementHelper
 	local self = setmetatable({
 		model = model,
 		businessId = businessId,
@@ -213,12 +232,12 @@ function MovementController.new(
 		lastAvoidanceAt = 0,
 
 		debug = debug,
-	}, MovementController) :: any
+	}, MovementHelper) :: any
 
 	return self
 end
 
-function MovementController:SetRoute(waypoints: { CFrame })
+function MovementHelper:SetRoute(waypoints: { CFrame })
 	self.routeWaypoints = waypoints
 	self.routeIndex = 1
 	self.stuckTimer = 0
@@ -230,14 +249,16 @@ function MovementController:SetRoute(waypoints: { CFrame })
 	if self.debug and self.debug.SetRouteIndex then
 		self.debug:SetRouteIndex(self.routeIndex)
 	end
+
+	debugStatus(self.debug, `route planned: {#waypoints} waypoints`)
 end
 
-function MovementController:_applyWalkSpeed()
+function MovementHelper:_applyWalkSpeed()
 	local slowdown = CrowdService.GetCrowdSlowdown(self.root.Position, 6, self.model)
 	self.humanoid.WalkSpeed = math.max(4, self.baseWalkSpeed * self.personality.walkSpeedMultiplier * slowdown)
 end
 
-function MovementController:_updateStuck(deltaSeconds: number): "ok" | "correct" | "reroute"
+function MovementHelper:_updateStuck(deltaSeconds: number): "ok" | "correct" | "reroute"
 	local moved = (self.root.Position - self.lastPosition).Magnitude
 	if moved < STUCK_MOVE_THRESHOLD then
 		self.stuckTimer += deltaSeconds
@@ -263,7 +284,7 @@ function MovementController:_updateStuck(deltaSeconds: number): "ok" | "correct"
 	return "ok"
 end
 
-function MovementController:_applyLocalAvoidance(targetPosition: Vector3)
+function MovementHelper:_applyLocalAvoidance(targetPosition: Vector3)
 	local avoidanceDirection = CrowdService.GetLocalAvoidanceMoveDirection(self.model, targetPosition)
 	if avoidanceDirection then
 		if avoidanceDirection.Magnitude <= 0.01 then
@@ -283,7 +304,7 @@ function MovementController:_applyLocalAvoidance(targetPosition: Vector3)
 	end
 end
 
-function MovementController:_runPathTo(
+function MovementHelper:_runPathTo(
 	targetPosition: Vector3,
 	getRunning: () -> boolean,
 	moveToken: number,
@@ -293,6 +314,8 @@ function MovementController:_runPathTo(
 		self.debug:SetCurrentPathTarget(targetPosition)
 	end
 
+	debugStatus(self.debug, `SimplePath :: ({math.floor(targetPosition.X)}, {math.floor(targetPosition.Z)})`)
+
 	local dist = arrivalDistance or NODE_ARRIVAL_DISTANCE
 	local softDist = dist + ARRIVAL_HYSTERESIS_DISTANCE
 
@@ -301,6 +324,7 @@ function MovementController:_runPathTo(
 		if self.debug and self.debug.MarkEvent then
 			self.debug:MarkEvent("error", self.root.Position, "path:run-false")
 		end
+		debugStatus(self.debug, "SimplePath failed to start")
 		return false
 	end
 
@@ -317,6 +341,23 @@ function MovementController:_runPathTo(
 		end
 	end)
 	local errorConnection = self.path.Error:Connect(function()
+		-- if activePathReason then
+		-- 	correctionFailed = true
+		-- 	activePathReason = "main"
+
+		-- 	if self.debug and self.debug.MarkEvent then
+		-- 		self.debug:MarkEvent("error", self.root.Position, "correction-path-error")
+		-- 	end
+
+		-- 	task.defer(function()
+		-- 		if getRunning() and self.moveToken == moveToken then
+		-- 			self.path:Run(targetPosition)
+		-- 		end
+		-- 	end)
+
+		-- 	return
+		-- end
+
 		failed = true
 		failReason = "error"
 	end)
@@ -339,7 +380,8 @@ function MovementController:_runPathTo(
 		local delta = LOOP_INTERVAL
 
 		self:_applyWalkSpeed()
-		--self:_applyLocalAvoidance(targetPosition)
+		--CrowdService.UpdateMovementIntent(self.model, targetPosition, self.humanoid.WalkSpeed)
+		--self:_applyLocalAvoidance(targetPosition) -- :move overrides SimplePath, directs into wall
 
 		local distanceToTarget = getFlatDistance(self.root.Position, targetPosition)
 		local nearFinalTarget = distanceToTarget <= math.max(dist + 0.75, 3)
@@ -352,11 +394,13 @@ function MovementController:_runPathTo(
 				if self.debug and self.debug.MarkEvent then
 					self.debug:MarkEvent("correct", sideStep, "side-step")
 				end
+				debugStatus(self.debug, "stuck: side-step correction")
 				self.path:Run(sideStep)
 			elseif stuckAction == "reroute" then
 				if self.debug and self.debug.MarkEvent then
 					self.debug:MarkEvent("reroute", self.root.Position, "stuck")
 				end
+				debugStatus(self.debug, "stuck: requesting reroute")
 				failed = true
 				break
 			end
@@ -396,15 +440,17 @@ function MovementController:_runPathTo(
 	if not reached and self.debug and self.debug.MarkEvent then
 		if failReason == "blocked" then
 			self.debug:MarkEvent("blocked", self.root.Position, "path:blocked")
+			debugStatus(self.debug, "SimplePath blocked")
 		elseif failReason == "error" then
 			self.debug:MarkEvent("error", self.root.Position, "path:error")
+			debugStatus(self.debug, "SimplePath error")
 		end
 	end
 
 	return reached
 end
 
-function MovementController:_steerToGuideTarget(
+function MovementHelper:_steerToGuideTarget(
 	moveTarget: Vector3,
 	guidePosition: Vector3,
 	getRunning: () -> boolean,
@@ -414,6 +460,8 @@ function MovementController:_steerToGuideTarget(
 	if self.debug and self.debug.SetSteerTargets then
 		self.debug:SetSteerTargets(moveTarget, guidePosition)
 	end
+
+	debugStatus(self.debug, "steering (guide target)")
 
 	local startedAt = os.clock()
 
@@ -435,18 +483,34 @@ function MovementController:_steerToGuideTarget(
 
 		self.humanoid:MoveTo(moveTarget)
 
+		-- CrowdService.UpdateMovementIntent(self.model, moveTarget, self.humanoid.WalkSpeed)
+
+		-- local avoidanceDirection = CrowdService.GetLocalAvoidanceMoveDirection(self.model, moveTarget)
+		-- if avoidanceDirection then
+		-- 	if avoidanceDirection.Magnitude <= 0.01 then
+		-- 		self.humanoid:Move(Vector3.zero)
+		-- 		task.wait(self.personality.hesitationSeconds)
+		-- 	else
+		-- 		self.humanoid:Move(avoidanceDirection)
+		-- 	end
+		-- else
+		-- 	self.humanoid:MoveTo(moveTarget)
+		-- end
+
 		local stuckAction = self:_updateStuck(LOOP_INTERVAL)
 		if stuckAction == "correct" then
 			local sideStep = CrowdService.GetSideStepTarget(self.model, moveTarget)
 			if self.debug and self.debug.MarkEvent then
 				self.debug:MarkEvent("correct", sideStep, "steer-side-step")
 			end
+			debugStatus(self.debug, "steer: side-step correction")
 			self.humanoid:MoveTo(sideStep)
 			task.wait(0.2)
 		elseif stuckAction == "reroute" then
 			if self.debug and self.debug.MarkEvent then
 				self.debug:MarkEvent("reroute", self.root.Position, "steer-stuck")
 			end
+			debugStatus(self.debug, "steer: stuck :: reroute")
 			if self.debug and self.debug.SetSteerTargets then
 				self.debug:SetSteerTargets(nil, nil)
 			end
@@ -463,7 +527,7 @@ function MovementController:_steerToGuideTarget(
 	return ok
 end
 
-function MovementController:GetRouteGuideTarget(routeIndex: number): Vector3
+function MovementHelper:GetRouteGuideTarget(routeIndex: number): Vector3
 	local currentWaypoint = self.routeWaypoints[routeIndex]
 	local nextWaypoint = self.routeWaypoints[routeIndex + 1]
 
@@ -492,7 +556,7 @@ function MovementController:GetRouteGuideTarget(routeIndex: number): Vector3
 	return currentPosition + direction * forwardDistance + right * laneOffset
 end
 
-function MovementController:MoveAlongRoute(getRunning: () -> boolean): boolean
+function MovementHelper:MoveAlongRoute(getRunning: () -> boolean, finalReachDistance: number?): boolean
 	if #self.routeWaypoints == 0 then
 		return false
 	end
@@ -506,12 +570,20 @@ function MovementController:MoveAlongRoute(getRunning: () -> boolean): boolean
 		local targetPosition = waypoint.Position
 
 		local isFinalWaypoint = self.routeIndex == #self.routeWaypoints
+		local reachDistance = if isFinalWaypoint
+			then finalReachDistance or FINAL_REACH_DISTANCE
+			else ROUTE_WAYPOINT_REACH_DISTANCE
 
-		local reachDistance = if isFinalWaypoint then FINAL_REACH_DISTANCE else ROUTE_WAYPOINT_REACH_DISTANCE
+		if isCloseEnoughToTarget(self.root, targetPosition, reachDistance + ARRIVAL_HYSTERESIS_DISTANCE) then
+			self.routeIndex += 1
+			continue
+		end
 
 		if self.debug and self.debug.SetRouteIndex then
 			self.debug:SetRouteIndex(self.routeIndex)
 		end
+
+		debugStatus(self.debug, `route leg {self.routeIndex}/{#self.routeWaypoints}`)
 
 		if self.routeIndex > 1 and self.routeIndex < #self.routeWaypoints then
 			local hash = hashString(`{self.customerId}:{self.routeIndex}`)
@@ -545,10 +617,9 @@ function MovementController:MoveAlongRoute(getRunning: () -> boolean): boolean
 			-- )
 
 			if isFinalWaypoint then
-				legReached = self:_runPathTo(targetPosition, getRunning, moveToken, FINAL_REACH_DISTANCE)
+				legReached = self:_runPathTo(targetPosition, getRunning, moveToken, reachDistance)
 			else
 				local moveTarget = self:GetRouteGuideTarget(self.routeIndex)
-
 				legReached = self:_steerToGuideTarget(
 					moveTarget,
 					targetPosition,
@@ -557,7 +628,7 @@ function MovementController:MoveAlongRoute(getRunning: () -> boolean): boolean
 					ROUTE_GUIDE_ADVANCE_DISTANCE
 				)
 
-				if not legReached then
+				if not legReached and getRunning() then
 					legReached = self:_runPathTo(targetPosition, getRunning, moveToken, ROUTE_GUIDE_ADVANCE_DISTANCE)
 				end
 			end
@@ -572,6 +643,10 @@ function MovementController:MoveAlongRoute(getRunning: () -> boolean): boolean
 					local alternate =
 						StoreNavigationService.GetAlternateNode(self.businessId, nearest.nodeId, self.root.Position)
 					if alternate then
+						if self.debug and self.debug.MarkEvent then
+							self.debug:MarkEvent("reroute", alternate.cframe.Position, `alt:{alternate.nodeId}`)
+						end
+						debugStatus(self.debug, `alternate node: {alternate.nodeId}`)
 						self.routeWaypoints[self.routeIndex] = alternate.cframe
 						targetPosition = alternate.cframe.Position
 						legReached = self:_runPathTo(targetPosition, getRunning, moveToken, reachDistance)
@@ -598,14 +673,20 @@ function MovementController:MoveAlongRoute(getRunning: () -> boolean): boolean
 	return true
 end
 
-function MovementController:MoveToTarget(
+function MovementHelper:MoveToTarget(
 	targetCFrame: CFrame,
 	buildRoute: (fromPosition: Vector3) -> { CFrame },
-	getRunning: () -> boolean
+	getRunning: () -> boolean,
+	finalReachDistance: number?
 ): boolean
 	if not getRunning() then
 		return false
 	end
+
+	debugStatus(
+		self.debug,
+		`planning route -> ({math.floor(targetCFrame.Position.X)}, {math.floor(targetCFrame.Position.Z)})`
+	)
 
 	local route = buildRoute(self.root.Position)
 
@@ -614,21 +695,28 @@ function MovementController:MoveToTarget(
 	end
 
 	route = pruneRoute(route, self.root.Position, targetCFrame.Position)
-
-	if #route == 0 then
-		route = { targetCFrame }
-	end
+	route = ensureFinalWaypoint(route, targetCFrame)
 
 	self:SetRoute(route)
 
-	local followed = self:MoveAlongRoute(getRunning)
+	local followed = self:MoveAlongRoute(getRunning, finalReachDistance)
 
 	if not followed and getRunning() then
 		self.moveToken += 1
-		return self:_runPathTo(targetCFrame.Position, getRunning, self.moveToken, FINAL_REACH_DISTANCE)
+		debugStatus(self.debug, "route failed :: direct SimplePath to final target")
+		return self:_runPathTo(
+			targetCFrame.Position,
+			getRunning,
+			self.moveToken,
+			finalReachDistance or FINAL_REACH_DISTANCE
+		)
+	end
+
+	if followed then
+		debugStatus(self.debug, "arrived")
 	end
 
 	return followed
 end
 
-return MovementController
+return MovementHelper

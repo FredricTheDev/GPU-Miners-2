@@ -10,7 +10,7 @@ local Component = require(ReplicatedStorage.Packages.Component)
 local SimplePath = require(ReplicatedStorage.Packages.SimplePath)
 local WorldTags = require(ReplicatedStorage.Shared.WorldTags)
 
-local CustomerMovementController = require(ServerScriptService.Server.Modules.CustomerMovementController)
+local MovementHelper = require(ServerScriptService.Server.Modules.MovementHelper)
 local CustomerService = require(ServerScriptService.Server.Services.CustomerService)
 local CrowdService = require(ServerScriptService.Server.Services.CrowdService)
 local StoreNavigationService = require(ServerScriptService.Server.Services.StoreNavigationService)
@@ -27,6 +27,12 @@ local NPC_COLLISION_GROUP = "StoreNpc"
 
 local collisionGroupReady = false
 local destroyQueue: { Instance } = {}
+
+local ARRIVAL_TURN_SPEED = 9
+local ARRIVAL_TURN_TIMEOUT = 0.45
+local ARRIVAL_TURN_STEP = 1 / 60
+
+local SHELF_DEPART_DISTANCE = 4.5
 
 RunService.Heartbeat:Connect(function()
 	-- spread removing customer over multiple frames to prevent hitching
@@ -132,12 +138,33 @@ local function hashString(value: string): number
 	return hash
 end
 
+local function getFlatUnit(vector: Vector3): Vector3?
+	local flat = Vector3.new(vector.X, 0, vector.Z)
+	if flat.Magnitude < 0.05 then
+		return nil
+	end
+	return flat.Unit
+end
+
+local function getFlatDistance(a: Vector3, b: Vector3): number
+	return Vector3.new(a.X - b.X, 0, a.Z - b.Z).Magnitude
+end
+
+local function cframeLookingAt(position: Vector3, direction: Vector3): CFrame
+	local flatDirection = getFlatUnit(direction)
+	if not flatDirection then
+		return CFrame.new(position)
+	end
+	return CFrame.lookAt(position, position + flatDirection)
+end
+
 type PathVisualizer = {
 	SetRoute: (self: PathVisualizer, waypoints: { CFrame }) -> (),
 	SetRouteIndex: (self: PathVisualizer, routeIndex: number) -> (),
 	MarkEvent: (self: PathVisualizer, kind: string, position: Vector3, note: string?) -> (),
 	SetSteerTargets: (self: PathVisualizer, moveTarget: Vector3?, guideTarget: Vector3?) -> (),
 	SetCurrentPathTarget: (self: PathVisualizer, targetPosition: Vector3?) -> (),
+	SetStatus: (self: PathVisualizer, status: string) -> (),
 	Destroy: (self: PathVisualizer) -> (),
 }
 
@@ -148,6 +175,8 @@ type WaypointVisual = {
 
 local DEBUG_FOLDER_NAME = "DebugCustomerPaths"
 local DEBUG_MAX_EVENT_MARKERS = 40
+local CHECKOUT_SLOT_REACH_DISTANCE = 0.5
+local CHECKOUT_SLOT_ARRIVAL_DISTANCE = 1.6
 
 local DEBUG_COLORS = {
 	route = Color3.fromRGB(70, 170, 255),
@@ -341,6 +370,51 @@ local function createPathVisualizer(customerId: string, rootPart: BasePart): Pat
 		"RootToGuideTarget"
 	)
 
+	local statusGui = Instance.new("BillboardGui")
+	statusGui.Name = "Thinking"
+	statusGui.Size = UDim2.fromScale(4, 2)
+	statusGui.StudsOffsetWorldSpace = Vector3.new(0, 3.2, 0)
+	statusGui.AlwaysOnTop = true
+	statusGui.Parent = rootPart
+
+	local statusFrame = Instance.new("Frame")
+	statusFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 18)
+	statusFrame.BackgroundTransparency = 0.25
+	statusFrame.BorderSizePixel = 0
+	statusFrame.Size = UDim2.fromScale(1, 1)
+	statusFrame.Parent = statusGui
+
+	local statusCorner = Instance.new("UICorner")
+	statusCorner.CornerRadius = UDim.new(0.15, 0)
+	statusCorner.Parent = statusFrame
+
+	local statusTitle = Instance.new("TextLabel")
+	statusTitle.BackgroundTransparency = 1
+	statusTitle.Position = UDim2.fromScale(0.05, 0.04)
+	statusTitle.Size = UDim2.fromScale(0.6, 0.2)
+	statusTitle.Font = Enum.Font.GothamBold
+	statusTitle.TextScaled = true
+	statusTitle.TextXAlignment = Enum.TextXAlignment.Left
+	statusTitle.TextColor3 = Color3.fromRGB(230, 235, 255)
+	statusTitle.TextStrokeTransparency = 0.7
+	statusTitle.Text = `Customer {customerId}`
+	statusTitle.Parent = statusFrame
+
+	local statusText = Instance.new("TextLabel")
+	statusText.BackgroundTransparency = 1
+	statusText.Position = UDim2.fromScale(0.05, 0.3)
+	statusText.Size = UDim2.fromScale(0.8, 0.15)
+	statusText.Font = Enum.Font.Gotham
+	statusText.TextScaled = true
+	statusText.TextXAlignment = Enum.TextXAlignment.Left
+	statusText.TextYAlignment = Enum.TextYAlignment.Top
+	statusText.TextColor3 = Color3.fromRGB(210, 215, 230)
+	statusText.TextStrokeTransparency = 0.85
+	statusText.TextWrapped = true
+	statusText.RichText = false
+	statusText.Text = "planning..."
+	statusText.Parent = statusFrame
+
 	local heartbeatConn = RunService.Heartbeat:Connect(function()
 		if not rootPart.Parent then
 			return
@@ -445,6 +519,10 @@ local function createPathVisualizer(customerId: string, rootPart: BasePart): Pat
 		vis._currentPathTarget = targetPosition
 	end
 
+	function vis:SetStatus(status: string)
+		statusText.Text = status
+	end
+
 	function vis:MarkEvent(kind: string, position: Vector3, note: string?)
 		local color = (DEBUG_COLORS :: any)[kind] or Color3.fromRGB(255, 255, 255)
 		local marker = debugMakeAnchorPart(
@@ -471,6 +549,7 @@ local function createPathVisualizer(customerId: string, rootPart: BasePart): Pat
 
 	function vis:Destroy()
 		heartbeatConn:Disconnect()
+		statusGui:Destroy()
 		folder:Destroy()
 	end
 
@@ -487,6 +566,7 @@ function CustomerComponent:Construct()
 	self.WalkConnection = nil
 	self.WalkTrack = nil
 	self.CleanedUp = false
+	self.CheckoutQueueSlot = nil
 
 	local humanoid = self.Model:FindFirstChild("Humanoid")
 	local root = self.Model:FindFirstChild("HumanoidRootPart")
@@ -543,6 +623,8 @@ function CustomerComponent:Start()
 		return
 	end
 
+	self.Humanoid.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+
 	self.Model.PrimaryPart = self.Root
 	self.WalkConnection, self.WalkTrack = listenForApplyingWalkAnimation(self.Humanoid)
 	configureHumanoidForStoreMovement(self.Humanoid)
@@ -554,11 +636,11 @@ function CustomerComponent:Start()
 	--end
 
 	local path = SimplePath.new(self.Model, {
-		AgentRadius = 2,
+		AgentRadius = 1.75,
 		AgentHeight = 5,
 		AgentCanJump = false,
 		AgentCanClimb = false,
-		WaypointScaling = 2.5,
+		WaypointScaling = 2,
 		Costs = {},
 	}, {
 		TIME_VARIANCE = 0.1,
@@ -566,7 +648,7 @@ function CustomerComponent:Start()
 		JUMP_WHEN_STUCK = false,
 	})
 
-	self.Movement = CustomerMovementController.new(
+	self.Movement = MovementHelper.new(
 		self.Model,
 		self.BusinessId,
 		self.CustomerId,
@@ -638,10 +720,35 @@ function CustomerComponent:SnapToBrowseCFrame(browseCFrame: CFrame)
 	self.Model:PivotTo(CFrame.lookAt(finalPosition, finalPosition + flatLook.Unit))
 end
 
-function CustomerComponent:MoveToCFrame(targetCFrame: CFrame, buildRoute: ((Vector3) -> { CFrame })?): boolean
+function CustomerComponent:GetDepartCFrameFromCurrentFacing(): CFrame?
+	if not self.Root then
+		return nil
+	end
+
+	local currentPosition = self.Root.Position
+	local backward = -self.Root.CFrame.LookVector
+	local flatBackward = Vector3.new(backward.X, 0, backward.Z)
+
+	if flatBackward.Magnitude < 0.05 then
+		return nil
+	end
+
+	local departPosition = currentPosition + flatBackward.Unit * SHELF_DEPART_DISTANCE
+	return CFrame.new(departPosition)
+end
+
+function CustomerComponent:MoveToCFrame(
+	targetCFrame: CFrame,
+	buildRoute: ((Vector3) -> { CFrame })?,
+	canContinue: (() -> boolean)?,
+	finalReachDistance: number?,
+	moveMode: "Shelf" | "Checkout" | "Exit"?
+): boolean
 	if not self.Movement or not self.Root then
 		return false
 	end
+
+	self:AllowMovementRotation()
 
 	local routeBuilder = buildRoute
 		or function(fromPosition: Vector3)
@@ -649,15 +756,16 @@ function CustomerComponent:MoveToCFrame(targetCFrame: CFrame, buildRoute: ((Vect
 				self.BusinessId,
 				fromPosition,
 				targetCFrame.Position,
-				nil
+				nil,
+				self.CustomerId
 			)
 		end
 
 	CrowdService.ReserveMovementPosition(self.CustomerId, targetCFrame.Position, 8)
 
 	return self.Movement:MoveToTarget(targetCFrame, routeBuilder, function()
-		return self:GetRunning()
-	end)
+		return self:GetRunning() and (if canContinue then canContinue() else true)
+	end, finalReachDistance, moveMode)
 end
 
 function CustomerComponent:FaceBrowseCFrame(browseCFrame: CFrame)
@@ -695,18 +803,43 @@ function CustomerComponent:BrowseShelf(shelfId: string): "Cart" | "Ignore" | "St
 	self.Model:SetAttribute("TargetShelfId", shelfId)
 	self.Model:SetAttribute("BrowseSlotIndex", slotIndex)
 
+	local currentState = self.Model:GetAttribute("CustomerState")
+
+	if currentState == "Browsing" then
+		local departCFrame = self:GetDepartCFrameFromCurrentFacing()
+
+		if departCFrame then
+			local departRouteBuilder = function(fromPosition: Vector3)
+				return StoreNavigationService.FindRouteBetweenPositions(
+					self.BusinessId,
+					fromPosition,
+					departCFrame.Position,
+					nil
+				)
+			end
+	
+			self:MoveToCFrame(departCFrame, departRouteBuilder, nil, 1.8, "Shelf")
+		end
+	end
+
 	self:SetState("WalkingToShelf")
 
 	local routeBuilder = function(fromPosition: Vector3)
-		return StoreNavigationService.FindRouteToShelf(self.BusinessId, fromPosition, shelfId, browseCFrame)
+		return StoreNavigationService.FindRouteToShelf(
+			self.BusinessId,
+			fromPosition,
+			shelfId,
+			browseCFrame,
+			self.CustomerId
+		)
 	end
 
-	if not self:MoveToCFrame(browseCFrame, routeBuilder) then
+	if not self:MoveToCFrame(browseCFrame, routeBuilder, nil, nil, "Shelf") then
 		CrowdService.ReleaseCustomerReservations(self.CustomerId)
 		return "Ignore"
 	end
 
-	self:SnapToBrowseCFrame(browseCFrame)
+	self:SmoothFaceCFrame(browseCFrame, 0.35)
 	self:SetState("Browsing")
 	--self:FaceBrowseCFrame(browseCFrame)
 
@@ -756,17 +889,163 @@ end
 function CustomerComponent:MoveToCheckout(): boolean
 	self:SetState("WalkingToCheckout")
 
-	local preferredSlot = CustomerService.GetCheckoutQueueSlot(self.BusinessId, self.CustomerId)
-	local queueSlot = CrowdService.ReserveCheckoutSlot(self.BusinessId, self.CustomerId, preferredSlot, 60)
-		or preferredSlot
+	while self.Running do
+		local queueSlot = CustomerService.GetCheckoutQueueSlot(self.BusinessId, self.CustomerId)
+		local reservedSlot = CrowdService.ReserveCheckoutSlot(self.BusinessId, self.CustomerId, queueSlot, 60)
 
-	local checkoutCFrame = WorldQueryService.GetCheckoutQueueCFrame(self.BusinessId, queueSlot)
+		if not reservedSlot then
+			self:SetState("WaitingForCheckoutSpace")
 
-	local routeBuilder = function(fromPosition: Vector3)
-		return StoreNavigationService.FindRouteToCheckout(self.BusinessId, fromPosition, checkoutCFrame)
+			if self.Humanoid then
+				self.Humanoid:Move(Vector3.zero)
+			end
+
+			task.wait(0.35)
+			continue
+		end
+
+		self.CheckoutQueueSlot = reservedSlot
+
+		local checkoutCFrame = WorldQueryService.GetCheckoutQueueCFrame(self.BusinessId, queueSlot)
+
+		local routeBuilder = function(fromPosition: Vector3)
+			return StoreNavigationService.FindRouteToCheckout(
+				self.BusinessId,
+				fromPosition,
+				checkoutCFrame,
+				self.CustomerId
+			)
+		end
+
+		local reachedSlot = self:MoveToCFrame(checkoutCFrame, routeBuilder, function()
+			return CustomerService.GetCheckoutQueueSlot(self.BusinessId, self.CustomerId) == queueSlot
+		end, CHECKOUT_SLOT_REACH_DISTANCE, "Checkout")
+
+		if reachedSlot then
+			self:SmoothFaceCFrame(checkoutCFrame, 0.35)
+			return true
+		end
+
+		if CustomerService.GetCheckoutQueueSlot(self.BusinessId, self.CustomerId) == queueSlot then
+			return false
+		end
 	end
 
-	return self:MoveToCFrame(checkoutCFrame, routeBuilder)
+	return false
+end
+
+function CustomerComponent:MoveToCheckoutEntrance(): boolean
+	self:SetState("WalkingToCheckout")
+	self.CheckoutQueueSlot = nil
+
+	local joinSlot = CustomerService.GetCheckoutQueueJoinSlot(self.BusinessId)
+	local checkoutCFrame = WorldQueryService.GetCheckoutQueueCFrame(self.BusinessId, joinSlot)
+
+	local routeBuilder = function(fromPosition: Vector3)
+		return StoreNavigationService.FindRouteToCheckout(
+			self.BusinessId,
+			fromPosition,
+			checkoutCFrame,
+			self.CustomerId
+		)
+	end
+
+	local reached = self:MoveToCFrame(checkoutCFrame, routeBuilder)
+
+	if reached then
+		self:SmoothFaceCFrame(checkoutCFrame, 0.35)
+	end
+
+	return reached
+end
+
+function CustomerComponent:IsAtCheckoutQueueSlot(queueSlot: number): boolean
+	if not self.Root then
+		return false
+	end
+
+	local checkoutCFrame = WorldQueryService.GetCheckoutQueueCFrame(self.BusinessId, queueSlot)
+	return getFlatDistance(self.Root.Position, checkoutCFrame.Position) <= CHECKOUT_SLOT_ARRIVAL_DISTANCE
+end
+
+function CustomerComponent:RunCheckoutFlowWithRetries(): boolean
+	local maxAttempts = 4
+
+	for attempt = 1, maxAttempts do
+		if not self.Running then
+			return false
+		end
+
+		local reachedEntrance = self:MoveToCheckoutEntrance()
+
+		if reachedEntrance and CustomerService.EnterPhysicalCheckoutQueue(self.BusinessId, self.CustomerId) then
+			if self:MoveToCheckout() then
+				if self:WaitForCheckoutTurn() then
+					self:SetState("Paying")
+					task.wait(0.8)
+
+					if self.Running then
+						CustomerService.TryCompletePhysicalPurchase(self.BusinessId, self.CustomerId)
+						CrowdService.ReleaseCustomerReservations(self.CustomerId)
+					end
+
+					return true
+				end
+			end
+		end
+
+		CustomerService.LeavePhysicalCheckoutQueue(self.BusinessId, self.CustomerId)
+		CrowdService.ReleaseCustomerReservations(self.CustomerId)
+
+		self:SetState("WaitingForCheckoutPath")
+
+		if self.Humanoid then
+			self.Humanoid:Move(Vector3.zero)
+		end
+
+		task.wait(0.5 + attempt * 0.25)
+	end
+
+	return false
+end
+
+function CustomerComponent:WaitForCheckoutTurn(): boolean
+	local checkoutDoneAt: number? = nil
+
+	while self.Running do
+		local queueSlot = CustomerService.GetCheckoutQueueSlot(self.BusinessId, self.CustomerId)
+		local atAssignedSlot = self.CheckoutQueueSlot == queueSlot and self:IsAtCheckoutQueueSlot(queueSlot)
+
+		if not atAssignedSlot then
+			if not self:MoveToCheckout() then
+				return false
+			end
+			checkoutDoneAt = nil
+			queueSlot = CustomerService.GetCheckoutQueueSlot(self.BusinessId, self.CustomerId)
+			atAssignedSlot = self.CheckoutQueueSlot == queueSlot and self:IsAtCheckoutQueueSlot(queueSlot)
+		end
+
+		self:SetState("WaitingAtCheckout")
+		CrowdService.RefreshReservation(self.CustomerId, 10)
+
+		if self.Humanoid then
+			self.Humanoid:Move(Vector3.zero)
+		end
+
+		if queueSlot == 1 and atAssignedSlot then
+			if checkoutDoneAt == nil then
+				checkoutDoneAt = os.clock() + self:GetCustomerDelay(2.5, 4.5, "checkout")
+			elseif os.clock() >= checkoutDoneAt then
+				return true
+			end
+		else
+			checkoutDoneAt = nil
+		end
+
+		task.wait(0.2)
+	end
+
+	return false
 end
 
 function CustomerComponent:MoveToExit(): boolean
@@ -774,10 +1053,115 @@ function CustomerComponent:MoveToExit(): boolean
 	local exitCFrame = WorldQueryService.GetExitCFrame(self.BusinessId)
 
 	local routeBuilder = function(fromPosition: Vector3)
-		return StoreNavigationService.FindRouteToExit(self.BusinessId, fromPosition, exitCFrame)
+		return StoreNavigationService.FindRouteToExit(self.BusinessId, fromPosition, exitCFrame, self.CustomerId)
 	end
 
-	return self:MoveToCFrame(exitCFrame, routeBuilder)
+	return self:MoveToCFrame(exitCFrame, routeBuilder, nil, nil, "Exit")
+end
+
+local ARRIVAL_TURN_SPEED = math.rad(220)
+local ARRIVAL_TURN_EPSILON = math.rad(1.5)
+
+function CustomerComponent:SmoothFaceCFrame(targetCFrame: CFrame, timeout: number?)
+	if not self.Root or not self.Humanoid then
+		return
+	end
+
+	self._faceTurnToken = (self._faceTurnToken or 0) + 1
+	local turnToken = self._faceTurnToken
+
+	task.delay(0.5, function()
+		if turnToken ~= self._faceTurnToken then
+			return
+		end
+
+		if not self.Root or not self.Humanoid or not self.Model then
+			return
+		end
+
+		self.Humanoid:Move(Vector3.zero)
+		self.Humanoid.AutoRotate = false
+
+		self.Root.AssemblyLinearVelocity = Vector3.zero
+		self.Root.AssemblyAngularVelocity = Vector3.zero
+
+		local targetLook = targetCFrame.LookVector
+		local targetFlatLook = Vector3.new(targetLook.X, 0, targetLook.Z)
+
+		if targetFlatLook.Magnitude < 0.05 then
+			return
+		end
+
+		targetFlatLook = targetFlatLook.Unit
+
+		local endTime = os.clock() + (timeout or ARRIVAL_TURN_TIMEOUT)
+
+		while self.Running and os.clock() < endTime do
+			if turnToken ~= self._faceTurnToken then
+				return
+			end
+
+			local currentPivot = self.Model:GetPivot()
+			local pivotPosition = currentPivot.Position
+
+			local currentLook = currentPivot.LookVector
+			local currentFlatLook = Vector3.new(currentLook.X, 0, currentLook.Z)
+
+			if currentFlatLook.Magnitude < 0.05 then
+				break
+			end
+
+			currentFlatLook = currentFlatLook.Unit
+
+			local dot = math.clamp(currentFlatLook:Dot(targetFlatLook), -1, 1)
+			local cross = currentFlatLook:Cross(targetFlatLook)
+
+			local angleToTarget = math.atan2(cross.Y, dot)
+
+			if math.abs(angleToTarget) <= ARRIVAL_TURN_EPSILON then
+				break
+			end
+
+			local maxStepAngle = ARRIVAL_TURN_SPEED * ARRIVAL_TURN_STEP
+			local stepAngle = math.clamp(angleToTarget, -maxStepAngle, maxStepAngle)
+
+			local rotationStep = CFrame.fromAxisAngle(Vector3.yAxis, stepAngle)
+			local newLook = rotationStep:VectorToWorldSpace(currentFlatLook)
+
+			self.Model:PivotTo(CFrame.lookAt(pivotPosition, pivotPosition + newLook, Vector3.yAxis))
+
+			task.wait(ARRIVAL_TURN_STEP)
+		end
+
+		if turnToken ~= self._faceTurnToken then
+			return
+		end
+
+		local currentPivot = self.Model:GetPivot()
+		local currentLook = currentPivot.LookVector
+		local currentFlatLook = Vector3.new(currentLook.X, 0, currentLook.Z)
+
+		if currentFlatLook.Magnitude < 0.05 then
+			return
+		end
+
+		currentFlatLook = currentFlatLook.Unit
+
+		local finalDot = math.clamp(currentFlatLook:Dot(targetFlatLook), -1, 1)
+		local finalAngle = math.acos(finalDot)
+
+		if finalAngle <= math.rad(5) then
+			local pivotPosition = currentPivot.Position
+
+			self.Model:PivotTo(CFrame.lookAt(pivotPosition, pivotPosition + targetFlatLook, Vector3.yAxis))
+		end
+	end)
+end
+
+function CustomerComponent:AllowMovementRotation()
+	if self.Humanoid then
+		self.Humanoid.AutoRotate = true
+	end
 end
 
 function CustomerComponent:RunBrowsingLoop(): "Checkout" | "Steal" | "Leave"
@@ -817,17 +1201,27 @@ function CustomerComponent:RunStateMachine()
 	end
 
 	if nextAction == "Checkout" then
-		if CustomerService.EnterPhysicalCheckoutQueue(self.BusinessId, self.CustomerId) and self:MoveToCheckout() then
-			if self:WaitInPlace("WaitingAtCheckout", 2.5, 4.5, "checkout") then
-				self:SetState("Paying")
-				task.wait(0.8)
+		if CustomerService.EnterPhysicalCheckoutQueue(self.BusinessId, self.CustomerId) then
+			if self:MoveToCheckout() then
+				if self:WaitForCheckoutTurn() then
+					self:SetState("Paying")
+					task.wait(0.8)
 
-				if self.Running then
-					CustomerService.TryCompletePhysicalPurchase(self.BusinessId, self.CustomerId)
+					if self.Running then
+						CustomerService.TryCompletePhysicalPurchase(self.BusinessId, self.CustomerId)
+						CrowdService.ReleaseCustomerReservations(self.CustomerId)
+					end
+				else
+					CustomerService.LeavePhysicalCheckoutQueue(self.BusinessId, self.CustomerId)
+					CrowdService.ReleaseCustomerReservations(self.CustomerId)
 				end
 			else
 				CustomerService.LeavePhysicalCheckoutQueue(self.BusinessId, self.CustomerId)
+				CrowdService.ReleaseCustomerReservations(self.CustomerId)
 			end
+		else
+			CustomerService.LeavePhysicalCheckoutQueue(self.BusinessId, self.CustomerId)
+			CrowdService.ReleaseCustomerReservations(self.CustomerId)
 		end
 	elseif nextAction == "Steal" then
 		CustomerService.TryStartPhysicalTheft(self.BusinessId, self.CustomerId, self.Model)
@@ -836,7 +1230,21 @@ function CustomerComponent:RunStateMachine()
 	local exited = false
 
 	if self.Running then
-		exited = self:MoveToExit()
+		for attempt = 1, 6 do
+			exited = self:MoveToExit()
+
+			if exited then
+				break
+			end
+
+			self:SetState("WaitingForExitPath")
+
+			if self.Humanoid then
+				self.Humanoid:Move(Vector3.zero)
+			end
+
+			task.wait(0.5 + attempt * 0.25)
+		end
 	end
 
 	if not exited then
