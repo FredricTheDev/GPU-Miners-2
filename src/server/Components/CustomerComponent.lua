@@ -636,11 +636,11 @@ function CustomerComponent:Start()
 	--end
 
 	local path = SimplePath.new(self.Model, {
-		AgentRadius = 1.75,
+		AgentRadius = 3.5,
 		AgentHeight = 5,
 		AgentCanJump = false,
 		AgentCanClimb = false,
-		WaypointScaling = 2,
+		WaypointScaling = 2.5,
 		Costs = {},
 	}, {
 		TIME_VARIANCE = 0.1,
@@ -756,8 +756,7 @@ function CustomerComponent:MoveToCFrame(
 				self.BusinessId,
 				fromPosition,
 				targetCFrame.Position,
-				nil,
-				self.CustomerId
+				nil
 			)
 		end
 
@@ -803,35 +802,29 @@ function CustomerComponent:BrowseShelf(shelfId: string): "Cart" | "Ignore" | "St
 	self.Model:SetAttribute("TargetShelfId", shelfId)
 	self.Model:SetAttribute("BrowseSlotIndex", slotIndex)
 
-	local currentState = self.Model:GetAttribute("CustomerState")
+	-- local currentState = self.Model:GetAttribute("CustomerState")
 
-	if currentState == "Browsing" then
-		local departCFrame = self:GetDepartCFrameFromCurrentFacing()
+	-- if currentState == "Browsing" then
+	-- 	local departCFrame = self:GetDepartCFrameFromCurrentFacing()
 
-		if departCFrame then
-			local departRouteBuilder = function(fromPosition: Vector3)
-				return StoreNavigationService.FindRouteBetweenPositions(
-					self.BusinessId,
-					fromPosition,
-					departCFrame.Position,
-					nil
-				)
-			end
-	
-			self:MoveToCFrame(departCFrame, departRouteBuilder, nil, 1.8, "Shelf")
-		end
-	end
+	-- 	if departCFrame then
+	-- 		local departRouteBuilder = function(fromPosition: Vector3)
+	-- 			return StoreNavigationService.FindRouteBetweenPositions(
+	-- 				self.BusinessId,
+	-- 				fromPosition,
+	-- 				departCFrame.Position,
+	-- 				nil
+	-- 			)
+	-- 		end
+
+	-- 		self:MoveToCFrame(departCFrame, departRouteBuilder, nil, 1.8, "Shelf")
+	-- 	end
+	-- end
 
 	self:SetState("WalkingToShelf")
 
 	local routeBuilder = function(fromPosition: Vector3)
-		return StoreNavigationService.FindRouteToShelf(
-			self.BusinessId,
-			fromPosition,
-			shelfId,
-			browseCFrame,
-			self.CustomerId
-		)
+		return StoreNavigationService.FindRouteToShelf(self.BusinessId, fromPosition, shelfId, browseCFrame)
 	end
 
 	if not self:MoveToCFrame(browseCFrame, routeBuilder, nil, nil, "Shelf") then
@@ -909,12 +902,7 @@ function CustomerComponent:MoveToCheckout(): boolean
 		local checkoutCFrame = WorldQueryService.GetCheckoutQueueCFrame(self.BusinessId, queueSlot)
 
 		local routeBuilder = function(fromPosition: Vector3)
-			return StoreNavigationService.FindRouteToCheckout(
-				self.BusinessId,
-				fromPosition,
-				checkoutCFrame,
-				self.CustomerId
-			)
+			return StoreNavigationService.FindRouteToCheckout(self.BusinessId, fromPosition, checkoutCFrame)
 		end
 
 		local reachedSlot = self:MoveToCFrame(checkoutCFrame, routeBuilder, function()
@@ -942,12 +930,7 @@ function CustomerComponent:MoveToCheckoutEntrance(): boolean
 	local checkoutCFrame = WorldQueryService.GetCheckoutQueueCFrame(self.BusinessId, joinSlot)
 
 	local routeBuilder = function(fromPosition: Vector3)
-		return StoreNavigationService.FindRouteToCheckout(
-			self.BusinessId,
-			fromPosition,
-			checkoutCFrame,
-			self.CustomerId
-		)
+		return StoreNavigationService.FindRouteToCheckout(self.BusinessId, fromPosition, checkoutCFrame)
 	end
 
 	local reached = self:MoveToCFrame(checkoutCFrame, routeBuilder)
@@ -1053,7 +1036,7 @@ function CustomerComponent:MoveToExit(): boolean
 	local exitCFrame = WorldQueryService.GetExitCFrame(self.BusinessId)
 
 	local routeBuilder = function(fromPosition: Vector3)
-		return StoreNavigationService.FindRouteToExit(self.BusinessId, fromPosition, exitCFrame, self.CustomerId)
+		return StoreNavigationService.FindRouteToExit(self.BusinessId, fromPosition, exitCFrame)
 	end
 
 	return self:MoveToCFrame(exitCFrame, routeBuilder, nil, nil, "Exit")
