@@ -21,7 +21,7 @@ local BASE_GPU_PRICES: { [string]: number } = {
 	fx_550 = 1400,
 	fx_5500 = 1600,
 	fx_6500 = 1800,
-	fx_7500 = 2200,
+	fx_6600 = 2200,
 }
 
 function StoreService:OnInit() end

@@ -145,6 +145,33 @@ function WorldQueryService.GetShelfCFrame(businessId: string, shelfId: string): 
 	return WorldQueryService.GetFirstTaggedCFrame(WorldTags.BrowsePoint, businessId)
 end
 
+function WorldQueryService.GetShelfGpuFolder(businessId: string, shelfId: string): Folder?
+	for _, instance in WorldQueryService.GetTaggedInstancesForBusiness(WorldTags.ShelfPoint, businessId) do
+		if instance:GetAttribute("ShelfId") ~= shelfId then
+			continue
+		end
+
+		local current: Instance? = instance
+		while current and current ~= Workspace do
+			local directGpuFolder = current:FindFirstChild("GPUs")
+			if directGpuFolder and directGpuFolder:IsA("Folder") then
+				return directGpuFolder
+			end
+
+			if current:GetAttribute("ShelfId") == shelfId then
+				local nestedGpuFolder = current:FindFirstChild("GPUs", true)
+				if nestedGpuFolder and nestedGpuFolder:IsA("Folder") then
+					return nestedGpuFolder
+				end
+			end
+
+			current = current.Parent
+		end
+	end
+
+	return nil
+end
+
 function WorldQueryService.GetShelfBrowseCFrame(businessId: string, shelfId: string, slotIndex: number): CFrame?
 	for _, instance in WorldQueryService.GetTaggedInstancesForBusiness(WorldTags.ShelfPoint, businessId) do
 		if instance:GetAttribute("ShelfId") == shelfId then

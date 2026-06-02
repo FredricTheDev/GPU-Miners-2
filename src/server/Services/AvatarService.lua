@@ -109,7 +109,7 @@ end
 
 function AvatarService.CreateCustomerModelAsync(avatarUserId: number, modelName: string): Model?
 	local success, modelOrError = pcall(function()
-		local description = Players:GetHumanoidDescriptionFromUserIdAsync(1)
+		local description = Players:GetHumanoidDescriptionFromUserIdAsync(avatarUserId)
 		return Players:CreateHumanoidModelFromDescriptionAsync(description, Enum.HumanoidRigType.R6)
 	end)
 

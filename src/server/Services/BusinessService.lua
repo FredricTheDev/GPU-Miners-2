@@ -55,12 +55,11 @@ local function createDefaultShelves(): { [string]: ShelfState }
 		},
 		right_display_3 = {
 			id = "right_display_3",
-			gpuId = "fx_7500",
+			gpuId = "fx_6600",
 			stockAmount = 6,
 			maxStock = 12,
 			priceMultiplier = 1,
 		},
-
 	}
 end
 
@@ -97,7 +96,7 @@ function BusinessService.CreateBusinessForPlayer(player: Player): BusinessState
 				fx_550 = 12,
 				fx_5500 = 12,
 				fx_6500 = 12,
-				fx_7500 = 12,
+				fx_6600 = 12,
 			},
 			capacity = 250,
 			usedCapacity = 84,

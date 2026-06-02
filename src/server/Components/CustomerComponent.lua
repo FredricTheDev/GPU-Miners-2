@@ -4,6 +4,7 @@ local PhysicsService = game:GetService("PhysicsService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 local ServerScriptService = game:GetService("ServerScriptService")
+local TweenService = game:GetService("TweenService")
 local Workspace = game:GetService("Workspace")
 
 local Component = require(ReplicatedStorage.Packages.Component)
@@ -17,6 +18,9 @@ local StoreNavigationService = require(ServerScriptService.Server.Services.Store
 local WorldQueryService = require(ServerScriptService.Server.Services.WorldQueryService)
 
 local Animations = ReplicatedStorage:WaitForChild("Animations")
+local Billboards = ReplicatedStorage:WaitForChild("Billboards")
+
+local EmotionBillboard = Billboards:WaitForChild("Emotion")
 
 local CustomerComponent = Component.new({
 	Tag = WorldTags.Customer,
@@ -33,6 +37,114 @@ local ARRIVAL_TURN_TIMEOUT = 0.45
 local ARRIVAL_TURN_STEP = 1 / 60
 
 local SHELF_DEPART_DISTANCE = 4.5
+local GPU_HOLD_SECONDS = 1
+local GPU_HAND_OFFSET = CFrame.new(0, -0.25, -0.45) * CFrame.Angles(0, math.rad(90), 0)
+
+local GPU_GRAB_ANIMATION_NAME = "CustomerGrabGpu"
+local GPU_PICKUP_MARKER = "Pickup"
+local GPU_HIDE_MARKER = "Hide"
+
+local GPU_PICKUP_FALLBACK_SECONDS = 0.45
+local GPU_HIDE_FALLBACK_SECONDS = 1.15
+local GPU_MIN_VISIBLE_SECONDS = 1.5
+
+local GPU_RIGHT_GRIP_ATTACHMENT_NAME = "CustomerRightGripAttachment"
+
+type CustomerShelfEmotion =
+	"Bought"
+	| "BoughtWanted"
+	| "BoughtBargain"
+	| "WantedGpu"
+	| "GoodPrice"
+	| "OutOfStock"
+	| "TooExpensive"
+	| "NotInterested"
+	| "Leaving"
+	| "Stealing"
+
+local EMOTION_SHOW_SECONDS = 2.4
+local EMOTION_OUTRO_SECONDS = 0.18
+local EMOTION_INTRO_TWEEN = TweenInfo.new(0.22, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+local EMOTION_OUTRO_TWEEN = TweenInfo.new(EMOTION_OUTRO_SECONDS, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
+
+local EMOTION_CHANCES: { [CustomerShelfEmotion]: number } = {
+	Bought = 0.75,
+	BoughtWanted = 1,
+	BoughtBargain = 0.95,
+	WantedGpu = 0.85,
+	GoodPrice = 0.7,
+	OutOfStock = 0.85,
+	TooExpensive = 0.65,
+	NotInterested = 0.35,
+	Leaving = 0.8,
+	Stealing = 0.65,
+}
+
+local EMOTION_COLORS: { [CustomerShelfEmotion]: Color3 } = {
+	Bought = Color3.fromRGB(245, 245, 255),
+	BoughtWanted = Color3.fromRGB(120, 255, 170),
+	BoughtBargain = Color3.fromRGB(120, 220, 255),
+	WantedGpu = Color3.fromRGB(150, 255, 170),
+	GoodPrice = Color3.fromRGB(120, 220, 255),
+	OutOfStock = Color3.fromRGB(255, 120, 120),
+	TooExpensive = Color3.fromRGB(255, 190, 105),
+	NotInterested = Color3.fromRGB(210, 215, 225),
+	Leaving = Color3.fromRGB(255, 150, 110),
+	Stealing = Color3.fromRGB(255, 105, 150),
+}
+
+local EMOTION_PHRASES: { [CustomerShelfEmotion]: { string } } = {
+	Bought = {
+		"I'll take this one.",
+		"Looks good enough.",
+		"This should work.",
+	},
+	BoughtWanted = {
+		"That's the one I wanted.",
+		"Perfect, it's in stock.",
+		"Exactly what I came for.",
+	},
+	BoughtBargain = {
+		"Great price.",
+		"That's a solid deal.",
+		"Can't pass that up.",
+	},
+	WantedGpu = {
+		"They have it.",
+		"That's on my list.",
+		"I was looking for this.",
+	},
+	GoodPrice = {
+		"Nice price.",
+		"That deal is tempting.",
+		"Cheaper than expected.",
+	},
+	OutOfStock = {
+		"Already sold out?",
+		"Nothing left here.",
+		"I missed it.",
+	},
+	TooExpensive = {
+		"Too pricey.",
+		"That's over budget.",
+		"I can't justify that.",
+	},
+	NotInterested = {
+		"Not what I need.",
+		"I'll keep looking.",
+		"Maybe another shelf.",
+	},
+	Leaving = {
+		"I'm done here.",
+		"Nothing worth buying.",
+		"I'll try somewhere else.",
+	},
+	Stealing = {
+		"No one is watching.",
+		"Maybe I can sneak this.",
+		"Too tempting.",
+	},
+}
 
 RunService.Heartbeat:Connect(function()
 	-- spread removing customer over multiple frames to prevent hitching
@@ -59,6 +171,356 @@ local function queueDestroy(instance: Instance)
 	else
 		table.insert(destroyQueue, instance)
 	end
+end
+
+local function scaleUDim2(size: UDim2, scale: number): UDim2
+	return UDim2.new(size.X.Scale * scale, size.X.Offset * scale, size.Y.Scale * scale, size.Y.Offset * scale)
+end
+
+local function getEmotionPhrase(emotion: CustomerShelfEmotion): string
+	local phrases = EMOTION_PHRASES[emotion]
+	return phrases[math.random(1, #phrases)]
+end
+
+local function getEmotionParent(customerModel: Model, root: BasePart?): BasePart?
+	local head = customerModel:FindFirstChild("Head", true)
+	if head and head:IsA("BasePart") then
+		return head
+	end
+
+	return root
+end
+
+local function getEmotionPrompt(billboard: BillboardGui): TextLabel?
+	local prompt = billboard:FindFirstChild("Prompt", true)
+	if prompt and prompt:IsA("TextLabel") then
+		return prompt
+	end
+
+	for _, descendant in billboard:GetDescendants() do
+		if descendant:IsA("TextLabel") then
+			return descendant
+		end
+	end
+
+	return nil
+end
+
+local function playGuiFadeIn(billboard: BillboardGui)
+	for _, descendant in billboard:GetDescendants() do
+		if descendant:IsA("Frame") then
+			local targetTransparency = descendant.BackgroundTransparency
+			descendant.BackgroundTransparency = 1
+			TweenService:Create(descendant, EMOTION_INTRO_TWEEN, { BackgroundTransparency = targetTransparency }):Play()
+		elseif descendant:IsA("TextLabel") then
+			local targetTextTransparency = descendant.TextTransparency
+			local targetStrokeTransparency = descendant.TextStrokeTransparency
+			descendant.TextTransparency = 1
+			descendant.TextStrokeTransparency = 1
+			TweenService:Create(descendant, EMOTION_INTRO_TWEEN, {
+				TextTransparency = targetTextTransparency,
+				TextStrokeTransparency = targetStrokeTransparency,
+			}):Play()
+		elseif descendant:IsA("ImageLabel") then
+			local targetImageTransparency = descendant.ImageTransparency
+			descendant.ImageTransparency = 1
+			TweenService:Create(descendant, EMOTION_INTRO_TWEEN, { ImageTransparency = targetImageTransparency }):Play()
+		end
+	end
+end
+
+local function playGuiFadeOut(billboard: BillboardGui)
+	for _, descendant in billboard:GetDescendants() do
+		if descendant:IsA("Frame") then
+			TweenService:Create(descendant, EMOTION_OUTRO_TWEEN, { BackgroundTransparency = 1 }):Play()
+		elseif descendant:IsA("TextLabel") then
+			TweenService:Create(descendant, EMOTION_OUTRO_TWEEN, {
+				TextTransparency = 1,
+				TextStrokeTransparency = 1,
+			}):Play()
+		elseif descendant:IsA("ImageLabel") then
+			TweenService:Create(descendant, EMOTION_OUTRO_TWEEN, { ImageTransparency = 1 }):Play()
+		end
+	end
+end
+
+local function normalizeGpuId(value: string): string
+	local normalized = string.lower(value)
+	normalized = string.gsub(normalized, "[^%w]+", "_")
+	normalized = string.gsub(normalized, "^_+", "")
+	normalized = string.gsub(normalized, "_+$", "")
+	return normalized
+end
+
+local function getGpuModelCFrame(model: Model): CFrame?
+	if model.PrimaryPart then
+		return model.PrimaryPart.CFrame
+	end
+
+	local firstPart = model:FindFirstChildWhichIsA("BasePart", true)
+	if firstPart then
+		return firstPart.CFrame
+	end
+
+	return nil
+end
+
+local function getGpuModelProductId(model: Model): string?
+	local productId = model:GetAttribute("GpuProductId")
+	if typeof(productId) == "string" then
+		return normalizeGpuId(productId)
+	end
+
+	local gpuId = model:GetAttribute("GpuId")
+	if typeof(gpuId) == "string" then
+		local normalizedGpuId = normalizeGpuId(gpuId)
+		if normalizedGpuId == normalizeGpuId(model.Name) then
+			return normalizedGpuId
+		end
+	end
+
+	return normalizeGpuId(model.Name)
+end
+
+local function getGpuHoldPart(customerModel: Model): BasePart?
+	local rightHand = customerModel:FindFirstChild("RightHand", true)
+	if rightHand and rightHand:IsA("BasePart") then
+		return rightHand
+	end
+
+	local rightArm = customerModel:FindFirstChild("Right Arm", true)
+	if rightArm and rightArm:IsA("BasePart") then
+		return rightArm
+	end
+
+	local root = customerModel:FindFirstChild("HumanoidRootPart")
+	if root and root:IsA("BasePart") then
+		return root
+	end
+
+	return nil
+end
+
+local function prepareGpuModelForHolding(model: Model): BasePart?
+	local holdPart = model.PrimaryPart
+
+	if not holdPart then
+		local handle = model:FindFirstChild("Handle", true)
+		if handle and handle:IsA("BasePart") then
+			holdPart = handle
+		end
+	end
+
+	if not holdPart then
+		holdPart = model:FindFirstChildWhichIsA("BasePart", true)
+	end
+
+	if not holdPart then
+		return nil
+	end
+
+	model.PrimaryPart = holdPart
+
+	for _, descendant in model:GetDescendants() do
+		if descendant:IsA("BasePart") then
+			descendant.Anchored = false
+			descendant.CanCollide = false
+			descendant.CanTouch = false
+			descendant.CanQuery = false
+			descendant.Massless = true
+			descendant.Transparency = 0
+
+			if descendant ~= holdPart then
+				local existingWeld = descendant:FindFirstChild("GpuModelHoldWeld")
+				if not existingWeld then
+					local weld = Instance.new("WeldConstraint")
+					weld.Name = "GpuModelHoldWeld"
+					weld.Part0 = holdPart
+					weld.Part1 = descendant
+					weld.Parent = descendant
+				end
+			end
+		end
+	end
+
+	return holdPart
+end
+
+local function getCharacterPart(customerModel: Model, names: { string }): BasePart?
+	for _, name in ipairs(names) do
+		local found = customerModel:FindFirstChild(name, true)
+		if found and found:IsA("BasePart") then
+			return found
+		end
+	end
+
+	return nil
+end
+
+local function getAnimator(humanoid: Humanoid): Animator?
+	local animator = humanoid:FindFirstChildOfClass("Animator")
+	if animator then
+		return animator
+	end
+
+	local found = humanoid:FindFirstChild("Animator")
+	if found and found:IsA("Animator") then
+		return found
+	end
+
+	return nil
+end
+
+local function playActionAnimation(humanoid: Humanoid, animationName: string): AnimationTrack?
+	local animator = getAnimator(humanoid)
+	if not animator then
+		return nil
+	end
+
+	local animation = Animations:FindFirstChild(animationName)
+	if not animation or not animation:IsA("Animation") then
+		warn(`Missing customer animation: {animationName}`)
+		return nil
+	end
+
+	local track = animator:LoadAnimation(animation)
+	track.Priority = Enum.AnimationPriority.Action
+	track.Looped = false
+	track:Play(0.12)
+
+	return track
+end
+
+local function waitForAnimationMarker(track: AnimationTrack?, markerName: string, fallbackSeconds: number): boolean
+	if not track then
+		task.wait(fallbackSeconds)
+		return false
+	end
+
+	local markerReached = false
+	local trackStopped = false
+
+	local markerConnection = track:GetMarkerReachedSignal(markerName):Connect(function()
+		markerReached = true
+	end)
+
+	local stoppedConnection = track.Stopped:Connect(function()
+		trackStopped = true
+	end)
+
+	local deadline = os.clock() + fallbackSeconds
+
+	while not markerReached and not trackStopped and os.clock() < deadline do
+		RunService.Heartbeat:Wait()
+	end
+
+	markerConnection:Disconnect()
+	stoppedConnection:Disconnect()
+
+	return markerReached
+end
+
+local function findAttachment(root: Instance, attachmentName: string): Attachment?
+	for _, descendant in root:GetDescendants() do
+		if descendant:IsA("Attachment") and descendant.Name == attachmentName then
+			return descendant
+		end
+	end
+
+	return nil
+end
+
+local function pivotModelAttachmentToWorld(model: Model, attachment: Attachment, targetWorldCFrame: CFrame)
+	local currentPivot = model:GetPivot()
+	local attachmentOffsetFromPivot = currentPivot:ToObjectSpace(attachment.WorldCFrame)
+
+	model:PivotTo(targetWorldCFrame * attachmentOffsetFromPivot:Inverse())
+end
+
+local function getGpuRightHand(customerModel: Model): BasePart?
+	local rightHand = customerModel:FindFirstChild("RightHand", true)
+	if rightHand and rightHand:IsA("BasePart") then
+		return rightHand
+	end
+
+	local rightArm = customerModel:FindFirstChild("Right Arm", true)
+	if rightArm and rightArm:IsA("BasePart") then
+		return rightArm
+	end
+
+	warn(`Customer {customerModel.Name} has no RightHand or Right Arm for GPU hold`)
+	return nil
+end
+
+local function attachGpuToRightHand(gpuModel: Model, gpuHoldPart: BasePart, rightHand: BasePart)
+	local handGrip = findAttachment(rightHand, "RightGripAttachment")
+	local gpuGrip = findAttachment(gpuModel, GPU_RIGHT_GRIP_ATTACHMENT_NAME)
+
+	if handGrip and gpuGrip then
+		pivotModelAttachmentToWorld(gpuModel, gpuGrip, handGrip.WorldCFrame)
+	else
+		gpuModel:PivotTo(rightHand.CFrame * GPU_HAND_OFFSET)
+	end
+
+	local weld = Instance.new("WeldConstraint")
+	weld.Name = "CustomerGpuHoldWeld"
+	weld.Part0 = rightHand
+	weld.Part1 = gpuHoldPart
+	weld.Parent = gpuHoldPart
+end
+
+local function chooseNearestShelfGpuModel(
+	businessId: string,
+	shelfId: string,
+	desiredGpuId: string?,
+	customerPosition: Vector3
+): Model?
+	local gpuFolder = WorldQueryService.GetShelfGpuFolder(businessId, shelfId)
+	if not gpuFolder then
+		return nil
+	end
+
+	local normalizedDesiredGpuId = if desiredGpuId then normalizeGpuId(desiredGpuId) else nil
+	local bestModel: Model? = nil
+	local bestDistance = math.huge
+
+	local function considerModel(model: Model, requireProductMatch: boolean)
+		local modelCFrame = getGpuModelCFrame(model)
+		if not modelCFrame then
+			return
+		end
+
+		if requireProductMatch and normalizedDesiredGpuId then
+			local productId = getGpuModelProductId(model)
+			if productId ~= normalizedDesiredGpuId then
+				return
+			end
+		end
+
+		local distance = (modelCFrame.Position - customerPosition).Magnitude
+		if distance < bestDistance then
+			bestModel = model
+			bestDistance = distance
+		end
+	end
+
+	if normalizedDesiredGpuId then
+		for _, child in gpuFolder:GetChildren() do
+			if child:IsA("Model") then
+				considerModel(child, true)
+			end
+		end
+	end
+
+	if not bestModel then
+		for _, child in gpuFolder:GetChildren() do
+			if child:IsA("Model") then
+				considerModel(child, false)
+			end
+		end
+	end
+
+	return bestModel
 end
 
 local function ensureCollisionGroup()
@@ -370,50 +832,50 @@ local function createPathVisualizer(customerId: string, rootPart: BasePart): Pat
 		"RootToGuideTarget"
 	)
 
-	local statusGui = Instance.new("BillboardGui")
-	statusGui.Name = "Thinking"
-	statusGui.Size = UDim2.fromScale(4, 2)
-	statusGui.StudsOffsetWorldSpace = Vector3.new(0, 3.2, 0)
-	statusGui.AlwaysOnTop = true
-	statusGui.Parent = rootPart
+	-- local statusGui = Instance.new("BillboardGui")
+	-- statusGui.Name = "Thinking"
+	-- statusGui.Size = UDim2.fromScale(4, 2)
+	-- statusGui.StudsOffsetWorldSpace = Vector3.new(0, 3.2, 0)
+	-- statusGui.AlwaysOnTop = true
+	-- statusGui.Parent = rootPart
 
-	local statusFrame = Instance.new("Frame")
-	statusFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 18)
-	statusFrame.BackgroundTransparency = 0.25
-	statusFrame.BorderSizePixel = 0
-	statusFrame.Size = UDim2.fromScale(1, 1)
-	statusFrame.Parent = statusGui
+	-- local statusFrame = Instance.new("Frame")
+	-- statusFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 18)
+	-- statusFrame.BackgroundTransparency = 0.25
+	-- statusFrame.BorderSizePixel = 0
+	-- statusFrame.Size = UDim2.fromScale(1, 1)
+	-- statusFrame.Parent = statusGui
 
-	local statusCorner = Instance.new("UICorner")
-	statusCorner.CornerRadius = UDim.new(0.15, 0)
-	statusCorner.Parent = statusFrame
+	-- local statusCorner = Instance.new("UICorner")
+	-- statusCorner.CornerRadius = UDim.new(0.15, 0)
+	-- statusCorner.Parent = statusFrame
 
-	local statusTitle = Instance.new("TextLabel")
-	statusTitle.BackgroundTransparency = 1
-	statusTitle.Position = UDim2.fromScale(0.05, 0.04)
-	statusTitle.Size = UDim2.fromScale(0.6, 0.2)
-	statusTitle.Font = Enum.Font.GothamBold
-	statusTitle.TextScaled = true
-	statusTitle.TextXAlignment = Enum.TextXAlignment.Left
-	statusTitle.TextColor3 = Color3.fromRGB(230, 235, 255)
-	statusTitle.TextStrokeTransparency = 0.7
-	statusTitle.Text = `Customer {customerId}`
-	statusTitle.Parent = statusFrame
+	-- local statusTitle = Instance.new("TextLabel")
+	-- statusTitle.BackgroundTransparency = 1
+	-- statusTitle.Position = UDim2.fromScale(0.05, 0.04)
+	-- statusTitle.Size = UDim2.fromScale(0.6, 0.2)
+	-- statusTitle.Font = Enum.Font.GothamBold
+	-- statusTitle.TextScaled = true
+	-- statusTitle.TextXAlignment = Enum.TextXAlignment.Left
+	-- statusTitle.TextColor3 = Color3.fromRGB(230, 235, 255)
+	-- statusTitle.TextStrokeTransparency = 0.7
+	-- statusTitle.Text = `Customer {customerId}`
+	-- statusTitle.Parent = statusFrame
 
-	local statusText = Instance.new("TextLabel")
-	statusText.BackgroundTransparency = 1
-	statusText.Position = UDim2.fromScale(0.05, 0.3)
-	statusText.Size = UDim2.fromScale(0.8, 0.15)
-	statusText.Font = Enum.Font.Gotham
-	statusText.TextScaled = true
-	statusText.TextXAlignment = Enum.TextXAlignment.Left
-	statusText.TextYAlignment = Enum.TextYAlignment.Top
-	statusText.TextColor3 = Color3.fromRGB(210, 215, 230)
-	statusText.TextStrokeTransparency = 0.85
-	statusText.TextWrapped = true
-	statusText.RichText = false
-	statusText.Text = "planning..."
-	statusText.Parent = statusFrame
+	-- local statusText = Instance.new("TextLabel")
+	-- statusText.BackgroundTransparency = 1
+	-- statusText.Position = UDim2.fromScale(0.05, 0.3)
+	-- statusText.Size = UDim2.fromScale(0.8, 0.15)
+	-- statusText.Font = Enum.Font.Gotham
+	-- statusText.TextScaled = true
+	-- statusText.TextXAlignment = Enum.TextXAlignment.Left
+	-- statusText.TextYAlignment = Enum.TextYAlignment.Top
+	-- statusText.TextColor3 = Color3.fromRGB(210, 215, 230)
+	-- statusText.TextStrokeTransparency = 0.85
+	-- statusText.TextWrapped = true
+	-- statusText.RichText = false
+	-- statusText.Text = "planning..."
+	-- statusText.Parent = statusFrame
 
 	local heartbeatConn = RunService.Heartbeat:Connect(function()
 		if not rootPart.Parent then
@@ -520,7 +982,7 @@ local function createPathVisualizer(customerId: string, rootPart: BasePart): Pat
 	end
 
 	function vis:SetStatus(status: string)
-		statusText.Text = status
+		--statusText.Text = status
 	end
 
 	function vis:MarkEvent(kind: string, position: Vector3, note: string?)
@@ -549,7 +1011,7 @@ local function createPathVisualizer(customerId: string, rootPart: BasePart): Pat
 
 	function vis:Destroy()
 		heartbeatConn:Disconnect()
-		statusGui:Destroy()
+		--statusGui:Destroy()
 		folder:Destroy()
 	end
 
@@ -567,6 +1029,8 @@ function CustomerComponent:Construct()
 	self.WalkTrack = nil
 	self.CleanedUp = false
 	self.CheckoutQueueSlot = nil
+	self._emotionToken = 0
+	self._emotionBillboard = nil
 
 	local humanoid = self.Model:FindFirstChild("Humanoid")
 	local root = self.Model:FindFirstChild("HumanoidRootPart")
@@ -582,6 +1046,12 @@ function CustomerComponent:Cleanup()
 
 	self.CleanedUp = true
 	self.Running = false
+	self._emotionToken += 1
+
+	if self._emotionBillboard then
+		self._emotionBillboard:Destroy()
+		self._emotionBillboard = nil
+	end
 
 	if self.Movement then
 		self.Movement.moveToken += 1
@@ -785,6 +1255,86 @@ function CustomerComponent:FaceBrowseCFrame(browseCFrame: CFrame)
 	self.Model:PivotTo(CFrame.lookAt(rootPosition, Vector3.new(targetPosition.X, rootPosition.Y, targetPosition.Z)))
 end
 
+function CustomerComponent:ShowEmotion(emotion: CustomerShelfEmotion)
+	if not self.Running then
+		return
+	end
+
+	local chance = EMOTION_CHANCES[emotion] or 0.5
+	if math.random() > chance then
+		return
+	end
+
+	local parent = getEmotionParent(self.Model, self.Root)
+	if not parent then
+		return
+	end
+
+	local billboard = EmotionBillboard:Clone()
+	if not billboard:IsA("BillboardGui") then
+		billboard:Destroy()
+		return
+	end
+
+	self._emotionToken += 1
+	local emotionToken = self._emotionToken
+
+	if self._emotionBillboard then
+		self._emotionBillboard:Destroy()
+		self._emotionBillboard = nil
+	end
+
+	local prompt = getEmotionPrompt(billboard)
+	if prompt then
+		prompt.Text = getEmotionPhrase(emotion)
+		--prompt.TextColor3 = EMOTION_COLORS[emotion] or Color3.fromRGB(245, 245, 255)
+	end
+
+	local targetSize = billboard.Size
+	if targetSize.X.Scale == 0 and targetSize.X.Offset == 0 and targetSize.Y.Scale == 0 and targetSize.Y.Offset == 0 then
+		targetSize = UDim2.fromOffset(220, 72)
+	end
+
+	local targetOffset = billboard.StudsOffsetWorldSpace
+	if targetOffset.Magnitude < 0.05 then
+		targetOffset = Vector3.new(0, 2.2, 0)
+	end
+
+	billboard.Enabled = true
+	billboard.AlwaysOnTop = true
+	billboard.Size = scaleUDim2(targetSize, 0.75)
+	billboard.StudsOffsetWorldSpace = targetOffset - Vector3.new(0, 0.25, 0)
+	billboard.Parent = parent
+	self._emotionBillboard = billboard
+
+	playGuiFadeIn(billboard)
+	TweenService:Create(billboard, EMOTION_INTRO_TWEEN, {
+		Size = targetSize,
+		StudsOffsetWorldSpace = targetOffset,
+	}):Play()
+
+	task.delay(EMOTION_SHOW_SECONDS, function()
+		if emotionToken ~= self._emotionToken or self._emotionBillboard ~= billboard then
+			return
+		end
+
+		playGuiFadeOut(billboard)
+		TweenService:Create(billboard, EMOTION_OUTRO_TWEEN, {
+			Size = scaleUDim2(targetSize, 0.85),
+			StudsOffsetWorldSpace = targetOffset,
+		}):Play()
+
+		task.delay(EMOTION_OUTRO_SECONDS, function()
+			if emotionToken ~= self._emotionToken or self._emotionBillboard ~= billboard then
+				return
+			end
+
+			self._emotionBillboard = nil
+			billboard:Destroy()
+		end)
+	end)
+end
+
 function CustomerComponent:BrowseShelf(shelfId: string): "Cart" | "Ignore" | "Steal" | "Leave"
 	local slotIndex = CrowdService.ReserveShelfSlot(self.BusinessId, shelfId, self.CustomerId, 24)
 
@@ -846,7 +1396,14 @@ function CustomerComponent:BrowseShelf(shelfId: string): "Cart" | "Ignore" | "St
 		return "Leave"
 	end
 
-	local result = CustomerService.ConsiderBrowsedShelf(self.BusinessId, self.CustomerId, shelfId, self.Model)
+	local result, emotion = CustomerService.ConsiderBrowsedShelf(self.BusinessId, self.CustomerId, shelfId, self.Model)
+	if emotion then
+		self:ShowEmotion(emotion)
+	end
+
+	if result == "Cart" then
+		self:GrabShelfGpu(shelfId)
+	end
 
 	CrowdService.ReleaseCustomerReservations(self.CustomerId)
 
@@ -877,6 +1434,108 @@ function CustomerComponent:WaitInPlace(stateName: string, minSeconds: number, ma
 	end
 
 	return self.Running
+end
+
+function CustomerComponent:GrabShelfGpu(shelfId: string): boolean
+	if not self.Running or not self.Root then
+		return false
+	end
+
+	local customer = CustomerService.GetCustomer(self.BusinessId, self.CustomerId)
+	local desiredGpuId = if customer then customer.desiredGpuId else nil
+
+	local gpuModel = chooseNearestShelfGpuModel(self.BusinessId, shelfId, desiredGpuId, self.Root.Position)
+	if not gpuModel then
+		return false
+	end
+
+	local reservedBy = gpuModel:GetAttribute("ReservedByCustomerId")
+	if typeof(reservedBy) == "string" and reservedBy ~= self.CustomerId then
+		return false
+	end
+
+	gpuModel:SetAttribute("ReservedByCustomerId", self.CustomerId)
+
+	local rightHand = getCharacterPart(self.Model, { "RightHand", "Right Arm" })
+	if not rightHand then
+		gpuModel:SetAttribute("ReservedByCustomerId", nil)
+		gpuModel:Destroy()
+		return false
+	end
+
+	self:SetState("TakingItem")
+
+	self.Humanoid:Move(Vector3.zero)
+	self.Humanoid.AutoRotate = false
+	self.Root.AssemblyLinearVelocity = Vector3.zero
+	self.Root.AssemblyAngularVelocity = Vector3.zero
+
+	local grabTrack = playActionAnimation(self.Humanoid, GPU_GRAB_ANIMATION_NAME)
+
+	waitForAnimationMarker(grabTrack, GPU_PICKUP_MARKER, GPU_PICKUP_FALLBACK_SECONDS)
+
+	if not self.Running or not gpuModel.Parent then
+		if grabTrack then
+			grabTrack:Stop(0.1)
+			grabTrack:Destroy()
+		end
+
+		return false
+	end
+
+	local gpuHoldPart = prepareGpuModelForHolding(gpuModel)
+	if not gpuHoldPart then
+		if grabTrack then
+			grabTrack:Stop(0.1)
+			grabTrack:Destroy()
+		end
+
+		gpuModel:Destroy()
+		return false
+	end
+
+	gpuModel.Parent = self.Model
+
+	local holdCFrame = self.Root.CFrame * CFrame.new(0, 0.3, -1.25) * CFrame.Angles(0, math.rad(90), 0)
+
+	gpuModel:PivotTo(holdCFrame)
+
+	local weld = Instance.new("WeldConstraint")
+	weld.Name = "CustomerGpuHoldWeld"
+	weld.Part0 = rightHand
+	weld.Part1 = gpuHoldPart
+	weld.Parent = gpuHoldPart
+
+	print("Attached GPU:", gpuModel.Name, "to", rightHand.Name, "at", gpuModel:GetPivot().Position)
+
+	self.Model:SetAttribute("HeldGpuId", desiredGpuId or "")
+
+	local attachedAt = os.clock()
+
+	waitForAnimationMarker(grabTrack, GPU_HIDE_MARKER, GPU_HIDE_FALLBACK_SECONDS)
+
+	local visibleFor = os.clock() - attachedAt
+	local remainingVisibleTime = GPU_MIN_VISIBLE_SECONDS - visibleFor
+
+	while self.Running and remainingVisibleTime > 0 do
+		task.wait(math.min(0.05, remainingVisibleTime))
+		remainingVisibleTime = GPU_MIN_VISIBLE_SECONDS - (os.clock() - attachedAt)
+	end
+
+	if gpuModel.Parent then
+		gpuModel:Destroy()
+	end
+
+	self.Model:SetAttribute("HeldGpuId", nil)
+
+	if grabTrack then
+		grabTrack:Stop(0.12)
+		grabTrack:Destroy()
+	end
+
+	self:AllowMovementRotation()
+
+	return true
 end
 
 function CustomerComponent:MoveToCheckout(): boolean

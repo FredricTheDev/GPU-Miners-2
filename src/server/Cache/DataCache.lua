@@ -37,6 +37,11 @@ type DataCacheType = {
         yield: boolean?
     ) -> PromiseTypes.Promise<DataTypes.PlayerData?>,
 
+    GetCachedPlayerData: (
+        self: DataCacheType,
+        id: number
+    ) -> DataTypes.PlayerData?,
+
     OnDataLoaded: (
         self: DataCacheType,
         id: number,
@@ -89,6 +94,10 @@ function DataCache:GetPlayerData(id: number, yield: boolean?): PromiseTypes.Prom
         end
         table.insert(self._pendingDataPromises[id], resolve)
     end)
+end
+
+function DataCache:GetCachedPlayerData(id: number): DataTypes.PlayerData?
+    return self._serverPlayerData[id]
 end
 
 function DataCache:OnDataLoaded(id: number, callback: (DataTypes.PlayerData) -> ()): ()

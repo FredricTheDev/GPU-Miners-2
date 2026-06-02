@@ -4,6 +4,16 @@ export type StaffMemberRole = "Cashier" | "Stocker" | "Guard" | "Technician"
 
 export type ShoppingGoal = "Gaming" | "Mining" | "Budget" | "Premium"
 
+export type CustomerReviewReason =
+    "GoodPrices"
+    | "FoundWantedGpu"
+    | "HighPrices"
+    | "OutOfStock"
+    | "LongQueue"
+    | "BadSelection"
+    | "StoleExpensiveGpu"
+    | "General"
+
 export type StaffTaskType =
     "ServeCheckout"
     | "RestockShelf"
@@ -76,9 +86,17 @@ export type CustomerRuntimeState = {
     browseShelfIds: { string },
     browseIndex: number,
     cartShelfIds: { string },
+    cartGpuIds: { string },
     purchasedGpuIds: { string },
+    stolenGpuIds: { string },
     remainingBudget: number,
+    spentAmount: number,
+    stolenValue: number,
     avatarUserId: number?,
+    returningCustomer: boolean,
+    memoryReason: CustomerReviewReason?,
+    reviewReasonScores: { [CustomerReviewReason]: number },
+    reviewSaved: boolean,
     physicalModelName: string?,
     lastObservedScore: number,
     lastDecisionAt: number,

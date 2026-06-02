@@ -12,6 +12,8 @@ local ReplicaTypes = require(ReplicatedStorage.Shared.PackageTypeHelpers.Replica
 local PROFILE_TEMPATE: DataTypes.ProfileData = {
 	Cash = 0,
 	LastJoinTime = 0,
+	CustomerReviews = {},
+	CustomerMemoriesByAvatarUserId = {},
 }
 
 local PlayerStore = ProfileStore.New("PlayerStore", PROFILE_TEMPATE)
