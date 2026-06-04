@@ -32,6 +32,7 @@ type CheckoutServiceType = RuntimeTypes.ModuleRuntimeType & {
 	OpenCheckoutInteraction: (businessId: string, customerId: string, customerModel: Model) -> boolean,
 	CancelCheckoutInteraction: (businessId: string, customerId: string) -> (),
 	IsCheckoutComplete: (businessId: string, customerId: string) -> boolean,
+	IsCheckoutBeingServed: (businessId: string) -> boolean,
 	CompleteCheckoutByStaff: (businessId: string, customerId: string, staffId: string?) -> boolean,
 }
 
@@ -586,6 +587,20 @@ function CheckoutService.IsCheckoutComplete(businessId: string, customerId: stri
 	end
 
 	completedUntilByCustomerId[key] = nil
+
+	return false
+end
+
+function CheckoutService.IsCheckoutBeingServed(businessId: string): boolean
+	for _, session in activeByCustomerId do
+		if session.businessId ~= businessId or session.completed then
+			continue
+		end
+
+		if session.assignedPlayerUserId ~= nil or session.step ~= "WaitingForCashier" then
+			return true
+		end
+	end
 
 	return false
 end

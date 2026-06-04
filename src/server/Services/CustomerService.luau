@@ -5,6 +5,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local AccountStore = require(script.Parent.Parent.Stores.AccountStore)
 local AccountDataStore = require(script.Parent.Parent.Accounts.Store)
+local StoreNavigationService = require(script.Parent.StoreNavigationService)
 local WorldQueryService = require(script.Parent.WorldQueryService)
 local Sift = require(ReplicatedStorage.Packages.Sift)
 local BusinessMath = require(ReplicatedStorage.Shared.Math.BusinessMath)
@@ -89,6 +90,7 @@ type CustomerServiceType = RuntimeTypes.ModuleRuntimeType & {
 	GetFrontCheckoutCustomerId: (businessId: string) -> string?,
 	GetCheckoutQueueJoinSlot: (businessId: string) -> number,
 	LeavePhysicalCheckoutQueue: (businessId: string, customerId: string) -> (),
+	AbandonPhysicalCheckoutQueue: (businessId: string, customerId: string) -> (),
 }
 
 local CustomerService = {} :: CustomerServiceType
@@ -772,6 +774,29 @@ local function getFlatDistance(a: Vector3, b: Vector3): number
 	return Vector3.new(a.X - b.X, 0, a.Z - b.Z).Magnitude
 end
 
+local function getRouteDistance(fromPosition: Vector3, waypoints: { CFrame }): number
+	local distance = 0
+	local cursor = fromPosition
+
+	for _, waypoint in waypoints do
+		distance += getFlatDistance(cursor, waypoint.Position)
+		cursor = waypoint.Position
+	end
+
+	return distance
+end
+
+local function getCheckoutSlotTravelDistance(businessId: string, fromPosition: Vector3, queueSlot: number): number
+	local checkoutCFrame = WorldQueryService.GetCheckoutQueueCFrame(businessId, queueSlot)
+	local route = StoreNavigationService.FindRouteToCheckout(businessId, fromPosition, checkoutCFrame)
+
+	if route and #route > 0 then
+		return getRouteDistance(fromPosition, route)
+	end
+
+	return getFlatDistance(fromPosition, checkoutCFrame.Position)
+end
+
 local function getCustomerPosition(businessId: string, customerId: string): Vector3?
 	for _, instance in CollectionService:GetTagged(WorldTags.Customer) do
 		if instance:GetAttribute("BusinessId") ~= businessId then
@@ -836,17 +861,13 @@ local function compactCheckoutQueueSlots(business: BusinessState)
 	applyCheckoutQueueEntries(business, entries)
 end
 
-local function rebalanceCheckoutQueueSlotsByDistance(business: BusinessState)
-	local checkoutCFrame = WorldQueryService.GetCheckoutQueueCFrame(business.id, 1)
-	local entries: { CheckoutQueueEntry } = {}
-
-	for customerId, slot in ensureCheckoutQueueSlots(business) do
-		local position = getCustomerPosition(business.id, customerId)
-		table.insert(entries, {
-			customerId = customerId,
-			slot = slot,
-			distance = if position then getFlatDistance(position, checkoutCFrame.Position) else math.huge,
-		})
+local function assignCheckoutQueueSlotsByTravelDistance(
+	business: BusinessState,
+	entries: { CheckoutQueueEntry }
+): { CheckoutQueueEntry }
+	for _, entry in entries do
+		local position = getCustomerPosition(business.id, entry.customerId)
+		entry.distance = if position then getCheckoutSlotTravelDistance(business.id, position, 1) else math.huge
 	end
 
 	table.sort(entries, function(left, right)
@@ -862,7 +883,20 @@ local function rebalanceCheckoutQueueSlotsByDistance(business: BusinessState)
 		return leftDistance < rightDistance
 	end)
 
-	applyCheckoutQueueEntries(business, entries)
+	return entries
+end
+
+local function rebalanceCheckoutQueueSlotsByDistance(business: BusinessState)
+	local entries: { CheckoutQueueEntry } = {}
+
+	for customerId, slot in ensureCheckoutQueueSlots(business) do
+		table.insert(entries, {
+			customerId = customerId,
+			slot = slot,
+		})
+	end
+
+	applyCheckoutQueueEntries(business, assignCheckoutQueueSlotsByTravelDistance(business, entries))
 end
 
 local function getTargetCustomers(demand: number): number
@@ -1264,6 +1298,25 @@ function CustomerService.LeavePhysicalCheckoutQueue(businessId: string, customer
 	local business = CustomerService._registry.BusinessService.GetBusiness(businessId)
 	if not business then
 		return
+	end
+
+	ensureCheckoutQueueSlots(business)[customerId] = nil
+	compactCheckoutQueueSlots(business)
+	publishBusiness(business)
+end
+
+function CustomerService.AbandonPhysicalCheckoutQueue(businessId: string, customerId: string)
+	local business = CustomerService._registry.BusinessService.GetBusiness(businessId)
+	if not business then
+		return
+	end
+
+	local customer = business.customers[customerId]
+	if customer then
+		customer.state = "Leaving"
+		customer.timeInState = 0
+		customer.satisfaction = math.clamp(customer.satisfaction - 12, 0, 100)
+		addReviewReason(customer, "LongQueue", 8)
 	end
 
 	ensureCheckoutQueueSlots(business)[customerId] = nil

@@ -53,6 +53,8 @@ export type MovementController = {
 
 local PATH_TIMEOUT_SECONDS = 14
 local PATH_RETRIES = 2
+local PATH_TRANSIENT_ERROR_RETRIES = 2
+local PATH_TRANSIENT_ERROR_DELAY = 0.15
 local NODE_ARRIVAL_DISTANCE = 5
 local PATH_CORRECTION_COOLDOWN = 0.5
 local FULL_REROUTE_COOLDOWN = 2.5
@@ -319,8 +321,16 @@ function MovementHelper:_runPathTo(
 	local dist = arrivalDistance or NODE_ARRIVAL_DISTANCE
 	local softDist = dist + ARRIVAL_HYSTERESIS_DISTANCE
 
+	if isCloseEnoughToTarget(self.root, targetPosition, softDist) then
+		return true
+	end
+
 	local started = self.path:Run(targetPosition)
 	if not started then
+		if isCloseEnoughToTarget(self.root, targetPosition, softDist) then
+			return true
+		end
+
 		if self.debug and self.debug.MarkEvent then
 			self.debug:MarkEvent("error", self.root.Position, "path:run-false")
 		end
@@ -331,6 +341,7 @@ function MovementHelper:_runPathTo(
 	local reached = false
 	local failed = false
 	local failReason: string? = nil
+	local transientErrorCount = 0
 
 	local reachedConnection = self.path.Reached:Connect(function()
 		-- might be a problem
@@ -341,22 +352,31 @@ function MovementHelper:_runPathTo(
 		end
 	end)
 	local errorConnection = self.path.Error:Connect(function()
-		-- if activePathReason then
-		-- 	correctionFailed = true
-		-- 	activePathReason = "main"
+		if isCloseEnoughToTarget(self.root, targetPosition, softDist) then
+			reached = true
+			return
+		end
 
-		-- 	if self.debug and self.debug.MarkEvent then
-		-- 		self.debug:MarkEvent("error", self.root.Position, "correction-path-error")
-		-- 	end
+		transientErrorCount += 1
 
-		-- 	task.defer(function()
-		-- 		if getRunning() and self.moveToken == moveToken then
-		-- 			self.path:Run(targetPosition)
-		-- 		end
-		-- 	end)
+		if transientErrorCount <= PATH_TRANSIENT_ERROR_RETRIES then
+			local retryDelay = PATH_TRANSIENT_ERROR_DELAY * transientErrorCount
 
-		-- 	return
-		-- end
+			task.delay(retryDelay, function()
+				if not getRunning() or self.moveToken ~= moveToken or reached or failed then
+					return
+				end
+
+				if isCloseEnoughToTarget(self.root, targetPosition, softDist) then
+					reached = true
+					return
+				end
+
+				self.path:Run(targetPosition)
+			end)
+
+			return
+		end
 
 		failed = true
 		failReason = "error"

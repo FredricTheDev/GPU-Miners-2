@@ -58,6 +58,14 @@ local function getQueueDirection(instance: Instance?, baseCFrame: CFrame): Vecto
 	return -baseCFrame.LookVector
 end
 
+local function getFlatUnit(vector: Vector3): Vector3?
+	local flat = Vector3.new(vector.X, 0, vector.Z)
+	if flat.Magnitude < 0.05 then
+		return nil
+	end
+	return flat.Unit
+end
+
 local function getScatteredCFrame(baseCFrame: CFrame, key: string, radius: number): CFrame
 	local hash = hashString(key)
 	local angle = math.rad(hash % 360)
@@ -130,10 +138,12 @@ function WorldQueryService.GetCheckoutQueueCFrame(businessId: string, queueSlot:
 	local baseCFrame = if checkoutInstance then getCFrame(checkoutInstance) :: CFrame else DEFAULT_STORE_CENTER
 	local spacing = getNumberAttribute(checkoutInstance, "QueueSpacing", 3)
 	local startOffset = getNumberAttribute(checkoutInstance, "QueueStartOffset", 2.5)
-	local queueDirection = getQueueDirection(checkoutInstance, baseCFrame)
+	local queueDirection = getFlatUnit(getQueueDirection(checkoutInstance, baseCFrame))
+		or getFlatUnit(-baseCFrame.LookVector)
+		or Vector3.zAxis
 	local distance = startOffset + math.max(0, queueSlot - 1) * spacing
 	local position = baseCFrame.Position + queueDirection * distance
-	return CFrame.lookAt(position, baseCFrame.Position)
+	return CFrame.lookAt(position, position - queueDirection)
 end
 
 function WorldQueryService.GetShelfCFrame(businessId: string, shelfId: string): CFrame?

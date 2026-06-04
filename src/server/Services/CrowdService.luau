@@ -349,7 +349,9 @@ function CrowdService.ReserveCheckoutSlot(
 		local slotIndex = math.clamp(preferredSlot, 1, CHECKOUT_SLOT_COUNT)
 		local reservation = slots[slotIndex]
 
-		if reservation and reservation.customerId ~= customerId then
+		if reservation and reservation.customerId ~= customerId and reservation.expiresAt >= now then
+			return nil
+		elseif reservation and reservation.customerId ~= customerId then
 			customerCheckoutSlots[reservation.customerId] = nil
 		end
 

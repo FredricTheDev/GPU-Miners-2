@@ -166,7 +166,7 @@ local function showOption(payload: any)
 	local customerModel = getCustomerModel(customerId)
 	local yOffset = getHeadOffset(customerModel, payload.adornee)
 
-	billboard.StudsOffsetWorldSpace = Vector3.new(0, yOffset + 0.5, 0)
+	billboard.StudsOffsetWorldSpace = Vector3.new(0, yOffset + 0.3, 0)
 
 	local content = billboard:WaitForChild("Content")
 	local prompt = content:WaitForChild("Prompt") :: TextLabel
@@ -282,7 +282,7 @@ local function createMessageBillboard(
 	character: Model?
 ): (BillboardGui, BillboardGui, TextLabel)
 	local offset = getHeadOffset(character, adornee)
-	local stack = getOrCreateMessageStack(adornee, Vector3.new(0, offset + 0.7, 0))
+	local stack = getOrCreateMessageStack(adornee, Vector3.new(0, offset + 1.5, 0))
 
 	messageOrder += 1
 

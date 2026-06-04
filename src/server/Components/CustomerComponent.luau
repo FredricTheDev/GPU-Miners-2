@@ -62,6 +62,7 @@ type CustomerShelfEmotion =
 	| "NotInterested"
 	| "Leaving"
 	| "Stealing"
+	| "QueueAngry"
 
 local EMOTION_SHOW_SECONDS = 2.4
 local EMOTION_OUTRO_SECONDS = 0.18
@@ -79,6 +80,7 @@ local EMOTION_CHANCES: { [CustomerShelfEmotion]: number } = {
 	NotInterested = 0.35,
 	Leaving = 0.8,
 	Stealing = 0.65,
+	QueueAngry = 1,
 }
 
 local EMOTION_COLORS: { [CustomerShelfEmotion]: Color3 } = {
@@ -92,6 +94,7 @@ local EMOTION_COLORS: { [CustomerShelfEmotion]: Color3 } = {
 	NotInterested = Color3.fromRGB(210, 215, 225),
 	Leaving = Color3.fromRGB(255, 150, 110),
 	Stealing = Color3.fromRGB(255, 105, 150),
+	QueueAngry = Color3.fromRGB(255, 115, 95),
 }
 
 local EMOTION_PHRASES: { [CustomerShelfEmotion]: { string } } = {
@@ -144,6 +147,12 @@ local EMOTION_PHRASES: { [CustomerShelfEmotion]: { string } } = {
 		"No one is watching.",
 		"Maybe I can sneak this.",
 		"Too tempting.",
+	},
+	QueueAngry = {
+		"This line isn't moving.",
+		"I don't have all day.",
+		"I'm done waiting.",
+		"Forget it, I'm leaving.",
 	},
 }
 
@@ -637,6 +646,8 @@ local DEBUG_FOLDER_NAME = "DebugCustomerPaths"
 local DEBUG_MAX_EVENT_MARKERS = 40
 local CHECKOUT_SLOT_REACH_DISTANCE = 0.5
 local CHECKOUT_SLOT_ARRIVAL_DISTANCE = 1.6
+local CHECKOUT_IDLE_BASE_SECONDS = 10
+local CHECKOUT_IDLE_ROLL_INTERVAL = 2.5
 
 local DEBUG_COLORS = {
 	route = Color3.fromRGB(70, 170, 255),
@@ -1158,6 +1169,28 @@ function CustomerComponent:FaceCFrame(targetCFrame: CFrame)
 	self.Model:PivotTo(CFrame.lookAt(self.Root.Position, flatTarget))
 end
 
+function CustomerComponent:SnapFaceToCFrame(targetCFrame: CFrame)
+	if not self.Root or not self.Humanoid then
+		return
+	end
+
+	local targetLook = targetCFrame.LookVector
+	local flatLook = Vector3.new(targetLook.X, 0, targetLook.Z)
+
+	if flatLook.Magnitude < 0.05 then
+		return
+	end
+
+	self.Humanoid:Move(Vector3.zero)
+	self.Humanoid.AutoRotate = false
+	self.Root.AssemblyLinearVelocity = Vector3.zero
+	self.Root.AssemblyAngularVelocity = Vector3.zero
+
+	local rootPosition = self.Root.Position
+	local flatTarget = rootPosition + flatLook.Unit
+	self.Model:PivotTo(CFrame.lookAt(rootPosition, Vector3.new(flatTarget.X, rootPosition.Y, flatTarget.Z), Vector3.yAxis))
+end
+
 function CustomerComponent:GetRunning(): boolean
 	return self.Running
 end
@@ -1421,6 +1454,24 @@ function CustomerComponent:GetCustomerDelay(minSeconds: number, maxSeconds: numb
 	return minSeconds + (maxSeconds - minSeconds) * alpha
 end
 
+function CustomerComponent:GetCheckoutIdleLeaveSeconds(): number
+	local customer = CustomerService.GetCustomer(self.BusinessId, self.CustomerId)
+	local patience = if customer then customer.profile.patience else 75
+	local normalizedPatience = math.clamp((patience - 35) / 80, 0, 1)
+	local jitter = self:GetCustomerDelay(0, 5, "checkout-idle-threshold")
+
+	return CHECKOUT_IDLE_BASE_SECONDS + normalizedPatience * 18 + jitter
+end
+
+function CustomerComponent:GetCheckoutIdleLeaveChance(rollCount: number): number
+	local customer = CustomerService.GetCustomer(self.BusinessId, self.CustomerId)
+	local patience = if customer then customer.profile.patience else 75
+	local normalizedPatience = math.clamp((patience - 35) / 80, 0, 1)
+	local rush = 1 - normalizedPatience
+
+	return math.clamp(0.18 + rush * 0.55 + math.max(0, rollCount - 1) * 0.08, 0.12, 0.9)
+end
+
 function CustomerComponent:WaitInPlace(stateName: string, minSeconds: number, maxSeonds: number, salt: string): boolean
 	if not self.Running then
 		return false
@@ -1573,7 +1624,7 @@ function CustomerComponent:MoveToCheckout(): boolean
 		end, CHECKOUT_SLOT_REACH_DISTANCE, "Checkout")
 
 		if reachedSlot then
-			self:SmoothFaceCFrame(checkoutCFrame, 0.35)
+			self:SnapFaceToCFrame(checkoutCFrame)
 			return true
 		end
 
@@ -1599,7 +1650,7 @@ function CustomerComponent:MoveToCheckoutEntrance(): boolean
 	local reached = self:MoveToCFrame(checkoutCFrame, routeBuilder)
 
 	if reached then
-		self:SmoothFaceCFrame(checkoutCFrame, 0.35)
+		self:SnapFaceToCFrame(checkoutCFrame)
 	end
 
 	return reached
@@ -1650,10 +1701,23 @@ end
 
 function CustomerComponent:WaitForCheckoutTurn(): boolean
 	local checkoutOpen = false
+	local idleSince = os.clock()
+	local lastQueueSlot: number? = nil
+	local nextIdleRollAt = math.huge
+	local idleRollCount = 0
 
 	while self.Running do
 		local queueSlot = CustomerService.GetCheckoutQueueSlot(self.BusinessId, self.CustomerId)
 		local atAssignedSlot = self.CheckoutQueueSlot == queueSlot and self:IsAtCheckoutQueueSlot(queueSlot)
+
+		if lastQueueSlot == nil or queueSlot < lastQueueSlot then
+			idleSince = os.clock()
+			nextIdleRollAt = idleSince + self:GetCheckoutIdleLeaveSeconds()
+			idleRollCount = 0
+		elseif nextIdleRollAt == math.huge then
+			nextIdleRollAt = idleSince + self:GetCheckoutIdleLeaveSeconds()
+		end
+		lastQueueSlot = queueSlot
 
 		if not atAssignedSlot then
 			if checkoutOpen then
@@ -1669,6 +1733,7 @@ function CustomerComponent:WaitForCheckoutTurn(): boolean
 
 		self:SetState("WaitingAtCheckout")
 		CrowdService.RefreshReservation(self.CustomerId, 10)
+		self:SnapFaceToCFrame(WorldQueryService.GetCheckoutQueueCFrame(self.BusinessId, queueSlot))
 
 		if self.Humanoid then
 			self.Humanoid:Move(Vector3.zero)
@@ -1687,6 +1752,30 @@ function CustomerComponent:WaitForCheckoutTurn(): boolean
 				CheckoutService.CancelCheckoutInteraction(self.BusinessId, self.CustomerId)
 				checkoutOpen = false
 			end
+		end
+
+		if CheckoutService.IsCheckoutBeingServed(self.BusinessId) then
+			idleSince = os.clock()
+			nextIdleRollAt = idleSince + self:GetCheckoutIdleLeaveSeconds()
+			idleRollCount = 0
+		elseif os.clock() >= nextIdleRollAt then
+			idleRollCount += 1
+
+			if math.random() <= self:GetCheckoutIdleLeaveChance(idleRollCount) then
+				if checkoutOpen then
+					CheckoutService.CancelCheckoutInteraction(self.BusinessId, self.CustomerId)
+					checkoutOpen = false
+				end
+
+				CustomerService.AbandonPhysicalCheckoutQueue(self.BusinessId, self.CustomerId)
+				CrowdService.ReleaseCustomerReservations(self.CustomerId)
+				self.CheckoutQueueSlot = nil
+				self:SetState("Leaving")
+				self:ShowEmotion("QueueAngry")
+				return false
+			end
+
+			nextIdleRollAt = os.clock() + CHECKOUT_IDLE_ROLL_INTERVAL
 		end
 
 		task.wait(0.2)
