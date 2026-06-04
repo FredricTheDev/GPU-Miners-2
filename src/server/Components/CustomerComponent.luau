@@ -13,6 +13,7 @@ local WorldTags = require(ReplicatedStorage.Shared.WorldTags)
 
 local MovementHelper = require(ServerScriptService.Server.Modules.MovementHelper)
 local CustomerService = require(ServerScriptService.Server.Services.CustomerService)
+local CheckoutService = require(ServerScriptService.Server.Services.CheckoutService)
 local CrowdService = require(ServerScriptService.Server.Services.CrowdService)
 local StoreNavigationService = require(ServerScriptService.Server.Services.StoreNavigationService)
 local WorldQueryService = require(ServerScriptService.Server.Services.WorldQueryService)
@@ -528,9 +529,6 @@ local function ensureCollisionGroup()
 		return
 	end
 
-	pcall(function()
-		PhysicsService:RegisterCollisionGroup(NPC_COLLISION_GROUP)
-	end)
 	pcall(function()
 		PhysicsService:CollisionGroupSetCollidable(NPC_COLLISION_GROUP, NPC_COLLISION_GROUP, false)
 	end)
@@ -1076,6 +1074,9 @@ function CustomerComponent:Cleanup()
 	if typeof(self.CustomerId) == "string" then
 		CrowdService.ReleaseCustomerReservations(self.CustomerId)
 	end
+	if typeof(self.BusinessId) == "string" and typeof(self.CustomerId) == "string" then
+		CheckoutService.CancelCheckoutInteraction(self.BusinessId, self.CustomerId)
+	end
 
 	if self.Humanoid then
 		self.Humanoid:Move(Vector3.zero)
@@ -1291,13 +1292,18 @@ function CustomerComponent:ShowEmotion(emotion: CustomerShelfEmotion)
 	end
 
 	local targetSize = billboard.Size
-	if targetSize.X.Scale == 0 and targetSize.X.Offset == 0 and targetSize.Y.Scale == 0 and targetSize.Y.Offset == 0 then
+	if
+		targetSize.X.Scale == 0
+		and targetSize.X.Offset == 0
+		and targetSize.Y.Scale == 0
+		and targetSize.Y.Offset == 0
+	then
 		targetSize = UDim2.fromOffset(220, 72)
 	end
 
 	local targetOffset = billboard.StudsOffsetWorldSpace
 	if targetOffset.Magnitude < 0.05 then
-		targetOffset = Vector3.new(0, 2.2, 0)
+		targetOffset = Vector3.new(0, 1.8, 0)
 	end
 
 	billboard.Enabled = true
@@ -1506,8 +1512,6 @@ function CustomerComponent:GrabShelfGpu(shelfId: string): boolean
 	weld.Part1 = gpuHoldPart
 	weld.Parent = gpuHoldPart
 
-	print("Attached GPU:", gpuModel.Name, "to", rightHand.Name, "at", gpuModel:GetPivot().Position)
-
 	self.Model:SetAttribute("HeldGpuId", desiredGpuId or "")
 
 	local attachedAt = os.clock()
@@ -1623,14 +1627,7 @@ function CustomerComponent:RunCheckoutFlowWithRetries(): boolean
 		if reachedEntrance and CustomerService.EnterPhysicalCheckoutQueue(self.BusinessId, self.CustomerId) then
 			if self:MoveToCheckout() then
 				if self:WaitForCheckoutTurn() then
-					self:SetState("Paying")
-					task.wait(0.8)
-
-					if self.Running then
-						CustomerService.TryCompletePhysicalPurchase(self.BusinessId, self.CustomerId)
-						CrowdService.ReleaseCustomerReservations(self.CustomerId)
-					end
-
+					CrowdService.ReleaseCustomerReservations(self.CustomerId)
 					return true
 				end
 			end
@@ -1652,17 +1649,20 @@ function CustomerComponent:RunCheckoutFlowWithRetries(): boolean
 end
 
 function CustomerComponent:WaitForCheckoutTurn(): boolean
-	local checkoutDoneAt: number? = nil
+	local checkoutOpen = false
 
 	while self.Running do
 		local queueSlot = CustomerService.GetCheckoutQueueSlot(self.BusinessId, self.CustomerId)
 		local atAssignedSlot = self.CheckoutQueueSlot == queueSlot and self:IsAtCheckoutQueueSlot(queueSlot)
 
 		if not atAssignedSlot then
+			if checkoutOpen then
+				CheckoutService.CancelCheckoutInteraction(self.BusinessId, self.CustomerId)
+				checkoutOpen = false
+			end
 			if not self:MoveToCheckout() then
 				return false
 			end
-			checkoutDoneAt = nil
 			queueSlot = CustomerService.GetCheckoutQueueSlot(self.BusinessId, self.CustomerId)
 			atAssignedSlot = self.CheckoutQueueSlot == queueSlot and self:IsAtCheckoutQueueSlot(queueSlot)
 		end
@@ -1675,16 +1675,25 @@ function CustomerComponent:WaitForCheckoutTurn(): boolean
 		end
 
 		if queueSlot == 1 and atAssignedSlot then
-			if checkoutDoneAt == nil then
-				checkoutDoneAt = os.clock() + self:GetCustomerDelay(2.5, 4.5, "checkout")
-			elseif os.clock() >= checkoutDoneAt then
+			if not checkoutOpen then
+				checkoutOpen = CheckoutService.OpenCheckoutInteraction(self.BusinessId, self.CustomerId, self.Model)
+			end
+
+			if CheckoutService.IsCheckoutComplete(self.BusinessId, self.CustomerId) then
 				return true
 			end
 		else
-			checkoutDoneAt = nil
+			if checkoutOpen then
+				CheckoutService.CancelCheckoutInteraction(self.BusinessId, self.CustomerId)
+				checkoutOpen = false
+			end
 		end
 
 		task.wait(0.2)
+	end
+
+	if checkoutOpen then
+		CheckoutService.CancelCheckoutInteraction(self.BusinessId, self.CustomerId)
 	end
 
 	return false
@@ -1846,13 +1855,7 @@ function CustomerComponent:RunStateMachine()
 		if CustomerService.EnterPhysicalCheckoutQueue(self.BusinessId, self.CustomerId) then
 			if self:MoveToCheckout() then
 				if self:WaitForCheckoutTurn() then
-					self:SetState("Paying")
-					task.wait(0.8)
-
-					if self.Running then
-						CustomerService.TryCompletePhysicalPurchase(self.BusinessId, self.CustomerId)
-						CrowdService.ReleaseCustomerReservations(self.CustomerId)
-					end
+					CrowdService.ReleaseCustomerReservations(self.CustomerId)
 				else
 					CustomerService.LeavePhysicalCheckoutQueue(self.BusinessId, self.CustomerId)
 					CrowdService.ReleaseCustomerReservations(self.CustomerId)

@@ -462,7 +462,7 @@ local function bootstrapInternal(rootFolder: Instance, label: string, exposeCont
 	end
 
 	startedFlag = true
-	recordDiag(diagnostics, "Info", scopeBase, string.format("Runtime `%s` started (%d modules).", label, enabledCount), logs)
+	recordDiag(diagnostics, "Info", scopeBase, string.format("Successfully started (%d modules).", enabledCount), logs)
 
 	return {
 		Context = context,

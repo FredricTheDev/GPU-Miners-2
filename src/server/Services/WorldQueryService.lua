@@ -203,18 +203,6 @@ function WorldQueryService.GetShelfBrowseCFrame(businessId: string, shelfId: str
 	return nil
 end
 
-function WorldQueryService.GetOrCreateCustomerFolder(): Folder
-	local existing = Workspace:FindFirstChild("ActiveCustomers")
-	if existing and existing:IsA("Folder") then
-		return existing
-	end
-
-	local folder = Instance.new("Folder")
-	folder.Name = "ActiveCustomers"
-	folder.Parent = Workspace
-	return folder
-end
-
 function WorldQueryService.HasLineOfSight(
 	fromPosition: Vector3,
 	toInstance: Instance,

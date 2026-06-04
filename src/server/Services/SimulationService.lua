@@ -112,6 +112,7 @@ function SimulationService:StepBusiness(business: BusinessState, deltaSeconds: n
 	self._securityService.UpdateSecurity(business, deltaSeconds)
 	self._logisticsService.UpdateDeliveries(business, deltaSeconds)
 	self._miningService.UpdateMiningRigs(business, deltaSeconds)
+	self._businessService.PublishBusiness(business)
 end
 
 function SimulationService:StepBusinessById(businessId: string, deltaSeconds: number)

@@ -1,14 +1,17 @@
 --!strict
 local CollectionService = game:GetService("CollectionService")
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local DataCache = require(script.Parent.Parent.Cache.DataCache)
-local DataTypes = require(script.Parent.Parent.Types.DataTypes)
+local AccountStore = require(script.Parent.Parent.Stores.AccountStore)
+local AccountDataStore = require(script.Parent.Parent.Accounts.Store)
 local WorldQueryService = require(script.Parent.WorldQueryService)
 local Sift = require(ReplicatedStorage.Packages.Sift)
 local BusinessMath = require(ReplicatedStorage.Shared.Math.BusinessMath)
 local BusinessTypes = require(ReplicatedStorage.Shared.Types.BusinessTypes)
+local AccountTypes = require(ReplicatedStorage.Shared.Types.AccountTypes)
 local RuntimeTypes = require(ReplicatedStorage.Shared.Types.RuntimeTypes)
+local Objects = require(ReplicatedStorage.Shared.Util.Objects)
 local WorldTags = require(ReplicatedStorage.Shared.WorldTags)
 
 type CustomerAction = "Buy" | "Steal" | "Leave"
@@ -26,13 +29,13 @@ type CustomerShelfEmotion =
 	| "Stealing"
 
 type BusinessState = BusinessTypes.BusinessState
-type CustomerMemory = DataTypes.CustomerMemory
+type Account = AccountTypes.Account
+type CustomerMemory = AccountTypes.CustomerMemory
 type CustomerProfile = BusinessTypes.CustomerProfile
-type CustomerReview = DataTypes.CustomerReview
+type CustomerReview = AccountTypes.CustomerReview
 type CustomerReviewReason = BusinessTypes.CustomerReviewReason
-type CustomerReviewSentiment = DataTypes.CustomerReviewSentiment
+type CustomerReviewSentiment = AccountTypes.CustomerReviewSentiment
 type CustomerRuntimeState = BusinessTypes.CustomerRuntimeState
-type ProfileData = DataTypes.ProfileData
 type ShelfState = BusinessTypes.ShelfState
 type ShoppingGoal = BusinessTypes.ShoppingGoal
 
@@ -68,7 +71,7 @@ type CustomerServiceType = RuntimeTypes.ModuleRuntimeType & {
 		customerId: string,
 		customerModel: Model
 	) -> ("Buy" | "Steal" | "Leave", string?),
-	TryCompletePhysicalPurchase: (businessId: string, customerId: string) -> boolean,
+	TryCompletePhysicalPurchase: (businessId: string, customerId: string, paymentMethod: ("Cash" | "Card")?) -> boolean,
 	TryStartPhysicalTheft: (businessId: string, customerId: string, customerModel: Model) -> boolean,
 	DespawnPhysicalCustomer: (businessId: string, customerId: string) -> (),
 	ChoosePhysicalBrowseShelf: (businessId: string, customerId: string) -> string?,
@@ -83,6 +86,7 @@ type CustomerServiceType = RuntimeTypes.ModuleRuntimeType & {
 	EnterPhysicalCheckoutQueue: (businessId: string, customerId: string) -> boolean,
 	RebalancePhysicalCheckoutQueue: (businessId: string) -> (),
 	GetCheckoutQueueSlot: (businessId: string, customerId: string) -> number,
+	GetFrontCheckoutCustomerId: (businessId: string) -> string?,
 	GetCheckoutQueueJoinSlot: (businessId: string) -> number,
 	LeavePhysicalCheckoutQueue: (businessId: string, customerId: string) -> (),
 }
@@ -183,29 +187,35 @@ local function getAvatarMemoryKey(avatarUserId: number): string
 	return tostring(math.floor(avatarUserId))
 end
 
-local function getOwnerProfileData(business: BusinessState): ProfileData?
-	local playerData = DataCache:GetCachedPlayerData(business.ownerUserId)
-	if not playerData then
+local function getOwnerPlayer(business: BusinessState): Player?
+	return Players:GetPlayerByUserId(business.ownerUserId)
+end
+
+local function getOwnerAccount(business: BusinessState): Account?
+	local player = getOwnerPlayer(business)
+	if not player then
 		return nil
 	end
 
-	return playerData.ProfileData
+	return AccountStore.getAccount(player.Name)
 end
 
-local function ensureCustomerReviews(profileData: ProfileData): { CustomerReview }
-	local anyProfile = profileData :: any
-	if anyProfile.CustomerReviews == nil then
-		anyProfile.CustomerReviews = {}
+local function getCustomerReviews(account: Account): { CustomerReview }
+	local accountData = account :: any
+	if type(accountData.CustomerReviews) == "table" then
+		return accountData.CustomerReviews
 	end
-	return anyProfile.CustomerReviews
+
+	return {}
 end
 
-local function ensureCustomerMemories(profileData: ProfileData): { [string]: CustomerMemory }
-	local anyProfile = profileData :: any
-	if anyProfile.CustomerMemoriesByAvatarUserId == nil then
-		anyProfile.CustomerMemoriesByAvatarUserId = {}
+local function getCustomerMemories(account: Account): { [string]: CustomerMemory }
+	local accountData = account :: any
+	if type(accountData.CustomerMemoriesByAvatarUserId) == "table" then
+		return accountData.CustomerMemoriesByAvatarUserId
 	end
-	return anyProfile.CustomerMemoriesByAvatarUserId
+
+	return {}
 end
 
 local function getGpuIdsByBasePrice(descending: boolean): { string }
@@ -226,12 +236,12 @@ local function chooseReturningCustomerMemory(business: BusinessState): CustomerM
 		return nil
 	end
 
-	local profileData = getOwnerProfileData(business)
-	if not profileData then
+	local account = getOwnerAccount(business)
+	if not account then
 		return nil
 	end
 
-	local memories = ensureCustomerMemories(profileData)
+	local memories = getCustomerMemories(account)
 	local weightedMemories: { { memory: CustomerMemory, weight: number } } = {}
 	local totalWeight = 0
 
@@ -668,7 +678,7 @@ local function createCustomerReview(customer: CustomerRuntimeState): CustomerRev
 end
 
 local function updateCustomerMemory(memory: CustomerMemory?, review: CustomerReview): CustomerMemory
-	local updated = memory
+	local updated = if memory then table.clone(memory) else nil
 		or {
 			avatarUserId = review.avatarUserId,
 			visits = 0,
@@ -715,22 +725,31 @@ local function saveCustomerReview(business: BusinessState, customer: CustomerRun
 		return
 	end
 
-	local profileData = getOwnerProfileData(business)
-	if not profileData then
+	local player = getOwnerPlayer(business)
+	if not player then
 		return
 	end
 
 	local review = createCustomerReview(customer)
-	local reviews = ensureCustomerReviews(profileData)
-	table.insert(reviews, 1, review)
-
-	while #reviews > MAX_SAVED_CUSTOMER_REVIEWS do
-		table.remove(reviews)
-	end
-
-	local memories = ensureCustomerMemories(profileData)
 	local memoryKey = getAvatarMemoryKey(review.avatarUserId)
-	memories[memoryKey] = updateCustomerMemory(memories[memoryKey], review)
+
+	AccountDataStore:updateImmutable(player, function(account: Account)
+		local reviews = table.clone(getCustomerReviews(account))
+		table.insert(reviews, 1, review)
+
+		while #reviews > MAX_SAVED_CUSTOMER_REVIEWS do
+			table.remove(reviews)
+		end
+
+		local memories = table.clone(getCustomerMemories(account))
+		memories[memoryKey] = updateCustomerMemory(memories[memoryKey], review)
+
+		return Objects.join(account, {
+			CustomerReviews = reviews,
+			CustomerMemoriesByAvatarUserId = memories,
+		})
+	end)
+
 	customer.reviewSaved = true
 end
 
@@ -924,6 +943,12 @@ function CustomerService:OnInit() end
 
 function CustomerService:OnStart() end
 
+local function publishBusiness(business: BusinessState)
+	if CustomerService._businessService and CustomerService._businessService.PublishBusiness then
+		CustomerService._businessService.PublishBusiness(business)
+	end
+end
+
 function CustomerService.SpawnCustomer(business: BusinessState): CustomerRuntimeState
 	local profile = createRandomProfile()
 	local memory = chooseReturningCustomerMemory(business)
@@ -965,6 +990,7 @@ function CustomerService.SpawnCustomer(business: BusinessState): CustomerRuntime
 	}
 
 	business.customers[customer.id] = customer
+	publishBusiness(business)
 	return customer
 end
 
@@ -990,9 +1016,10 @@ function CustomerService.SpawnPhysicalCustomerAsync(business: BusinessState, cus
 	model:SetAttribute("ShoppingGoal", customer.profile.shoppingGoal)
 	model:SetAttribute("Budget", customer.profile.budget)
 	model:PivotTo(WorldQueryService.GetSpawnCFrame(business.id, customer.id))
-	model.Parent = WorldQueryService.GetOrCreateCustomerFolder()
+	model.Parent = workspace:WaitForChild("ActiveCustomers")
 
 	CollectionService:AddTag(model, WorldTags.Customer)
+	publishBusiness(business)
 end
 
 function CustomerService.GetCustomer(businessId: string, customerId: string): CustomerRuntimeState?
@@ -1044,6 +1071,7 @@ function CustomerService.BuildPhysicalBrowseRoute(businessId: string, customerId
 	customer.browseIndex = 0
 	customer.state = "Browsing"
 	customer.timeInState = 0
+	publishBusiness(business)
 	return route
 end
 
@@ -1075,6 +1103,7 @@ function CustomerService.ConsiderBrowsedShelf(
 		customer.lastDecisionAt = os.clock()
 		customer.satisfaction = math.clamp(customer.satisfaction - 3, 0, 100)
 		addReviewReason(customer, "OutOfStock", 4)
+		publishBusiness(business)
 		return "Ignore", "OutOfStock"
 	end
 
@@ -1112,6 +1141,7 @@ function CustomerService.ConsiderBrowsedShelf(
 				else
 					addReviewReason(customer, "General", 1)
 				end
+				publishBusiness(business)
 				return "Cart", purchasedEmotion
 			end
 		end
@@ -1126,12 +1156,14 @@ function CustomerService.ConsiderBrowsedShelf(
 	then
 		customer.state = "Stealing"
 		addReviewReason(customer, "StoleExpensiveGpu", 5)
+		publishBusiness(business)
 		return "Steal", "Stealing"
 	end
 
 	if leaveScore > 70 and #customer.cartShelfIds == 0 then
 		customer.state = "Leaving"
 		addReviewReason(customer, "BadSelection", 3)
+		publishBusiness(business)
 		return "Leave", "Leaving"
 	end
 
@@ -1139,6 +1171,7 @@ function CustomerService.ConsiderBrowsedShelf(
 	if shelfEmotion == nil then
 		addReviewReason(customer, "BadSelection", 1)
 	end
+	publishBusiness(business)
 	return "Ignore", shelfEmotion or "NotInterested"
 end
 
@@ -1180,6 +1213,7 @@ function CustomerService.EnterPhysicalCheckoutQueue(businessId: string, customer
 
 	customer.state = "Queueing"
 	rebalanceCheckoutQueueSlotsByDistance(business)
+	publishBusiness(business)
 	return true
 end
 
@@ -1190,6 +1224,7 @@ function CustomerService.RebalancePhysicalCheckoutQueue(businessId: string)
 	end
 
 	rebalanceCheckoutQueueSlotsByDistance(business)
+	publishBusiness(business)
 end
 
 function CustomerService.GetCheckoutQueueSlot(businessId: string, customerId: string): number
@@ -1199,6 +1234,21 @@ function CustomerService.GetCheckoutQueueSlot(businessId: string, customerId: st
 	end
 
 	return ensureCheckoutQueueSlots(business)[customerId] or 1
+end
+
+function CustomerService.GetFrontCheckoutCustomerId(businessId: string): string?
+	local business = CustomerService._registry.BusinessService.GetBusiness(businessId)
+	if not business then
+		return nil
+	end
+
+	for customerId, queueSlot in ensureCheckoutQueueSlots(business) do
+		if queueSlot == 1 then
+			return customerId
+		end
+	end
+
+	return nil
 end
 
 function CustomerService.GetCheckoutQueueJoinSlot(businessId: string): number
@@ -1218,6 +1268,7 @@ function CustomerService.LeavePhysicalCheckoutQueue(businessId: string, customer
 
 	ensureCheckoutQueueSlots(business)[customerId] = nil
 	compactCheckoutQueueSlots(business)
+	publishBusiness(business)
 end
 
 function CustomerService.ChoosePhysicalBrowseShelf(businessId: string, customerId: string): string?
@@ -1237,6 +1288,7 @@ function CustomerService.ChoosePhysicalBrowseShelf(businessId: string, customerI
 	customer.desiredGpuId = if targetShelf then targetShelf.gpuId else customer.profile.preferredGpuId
 	customer.state = "Browsing"
 	customer.timeInState = 0
+	publishBusiness(business)
 	return customer.targetShelfId
 end
 
@@ -1315,10 +1367,15 @@ function CustomerService.DecidePhysicalCustomerAction(
 
 	local observedScore = CustomerService._securityService.GetCustomerObservedScore(business.id, customerModel)
 	local action = CustomerService.ThinkForCustomer(business, customer, observedScore)
+	publishBusiness(business)
 	return action, customer.targetShelfId
 end
 
-function CustomerService.TryCompletePhysicalPurchase(businessId: string, customerId: string): boolean
+function CustomerService.TryCompletePhysicalPurchase(
+	businessId: string,
+	customerId: string,
+	paymentMethod: "Cash" | "Card"?
+): boolean
 	local business = CustomerService._businessService.GetBusiness(businessId)
 	if not business then
 		return false
@@ -1332,6 +1389,7 @@ function CustomerService.TryCompletePhysicalPurchase(businessId: string, custome
 	customer.state = "Buying"
 	local availableBudget = customer.profile.budget
 	local purchasedAny = false
+	local spentTotal = 0
 
 	for index, shelfId in customer.cartShelfIds do
 		local shelf = CustomerService._storeService.GetShelf(business, shelfId)
@@ -1343,12 +1401,20 @@ function CustomerService.TryCompletePhysicalPurchase(businessId: string, custome
 				if shelf then shelf.priceMultiplier else 1
 			)
 			if price and price <= availableBudget then
-				CustomerService._businessService.AddMoney(business.id, price, "PhysicalGpuSale")
 				table.insert(customer.purchasedGpuIds, gpuId)
 				availableBudget -= price
 				customer.spentAmount += price
+				spentTotal += price
 				purchasedAny = true
 			end
+		end
+	end
+
+	if spentTotal > 0 then
+		if paymentMethod == "Card" then
+			CustomerService._businessService.AddPendingCardPayout(business.id, spentTotal, "PhysicalGpuCardSale")
+		else
+			CustomerService._businessService.AddMoney(business.id, spentTotal, "PhysicalGpuCashSale")
 		end
 	end
 
@@ -1370,6 +1436,7 @@ function CustomerService.TryCompletePhysicalPurchase(businessId: string, custome
 
 	customer.state = "Leaving"
 	customer.timeInState = 0
+	publishBusiness(business)
 	return purchasedAny
 end
 
@@ -1405,6 +1472,7 @@ function CustomerService.TryStartPhysicalTheft(businessId: string, customerId: s
 		customer.state = "Leaving"
 	end
 
+	publishBusiness(business)
 	return not detected
 end
 
@@ -1425,6 +1493,7 @@ function CustomerService.DespawnPhysicalCustomer(businessId: string, customerId:
 	business.security.activeThefts[customerId] = nil
 	CustomerService.LeavePhysicalCheckoutQueue(businessId, customerId)
 	business.customers[customerId] = nil
+	publishBusiness(business)
 end
 
 function CustomerService.UpdateCustomers(business: BusinessState, deltaSeconds: number)
@@ -1469,6 +1538,7 @@ function CustomerService.UpdateCustomers(business: BusinessState, deltaSeconds: 
 			business.customers[customerId] = nil
 		end
 	end
+	publishBusiness(business)
 end
 
 return CustomerService

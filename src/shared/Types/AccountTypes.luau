@@ -1,8 +1,3 @@
-export type PlayerData = {
-	ProfileData: ProfileData,
-	ReplicaData: ReplicaData,
-}
-
 export type CustomerReviewSentiment = "Positive" | "Neutral" | "Angry"
 
 export type CustomerReviewReason =
@@ -51,7 +46,7 @@ export type CustomerMemory = {
 	totalStolenValue: number,
 }
 
-export type ProfileData = {
+export type Account = {
 	Cash: number,
 	PendingCardPayout: number,
 	ClaimableCardPayout: number,
@@ -66,6 +61,21 @@ export type ProfileData = {
 	CustomerMemoriesByAvatarUserId: { [string]: CustomerMemory },
 }
 
-export type ReplicaData = {}
+local accountTemplate: Account = {
+	Cash = 1000,
+	PendingCardPayout = 0,
+	ClaimableCardPayout = 0,
+	LastBankDay = 0,
+	LastJoinTime = 0,
 
-return {}
+	CurrentDay = 1,
+	CurrentMinute = 8 * 60,
+	LastClockUpdateUnix = 0,
+
+	CustomerReviews = {},
+	CustomerMemoriesByAvatarUserId = {},
+}
+
+return {
+	accountTemplate = accountTemplate,
+}

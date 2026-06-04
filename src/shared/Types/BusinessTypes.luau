@@ -55,6 +55,9 @@ export type StoreState = {
     shelves: { [string]: ShelfState },
     checkoutQueueLength: number,
     checkoutQueueSlots: { [string]: number },
+    pendingCardPayout: number,
+    claimableCardPayout: number,
+    currentBankDay: number,
     open: boolean,
 }
 

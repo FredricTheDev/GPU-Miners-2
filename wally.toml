@@ -17,6 +17,12 @@ Module3d = "kumarion/module3d@0.0.2"
 Maid = "coiorevent8/maid@3.4.0"
 Component = "sleitnick/component@2.4.8"
 SimplePath = "untakeranonplay/simplepath@0.1.1"
+Remo = "littensy/remo@1.5.3"
+GreenTea = "corecii/greentea@0.4.11"
+Lyra = "paradoxum-games/lyra@0.6.0"
+ReactCharm = "littensy/react-charm@0.3.0"
+React = "jsdotlua/react@17.2.1"
+ReactRoblox = "jsdotlua/react-roblox@17.2.1"
 
 [server-dependencies]
 ProfileStore = "ddashdev/profilestore@1.0.4"

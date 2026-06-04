@@ -1,12 +1,62 @@
 --!strict
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local BusinessTypes = require(ReplicatedStorage.Shared.Types.BusinessTypes)
+local ServerScriptService = game:GetService("ServerScriptService")
 
+local BusinessTypes = require(ReplicatedStorage.Shared.Types.BusinessTypes)
+local AccountTypes = require(ReplicatedStorage.Shared.Types.AccountTypes)
+local Objects = require(ReplicatedStorage.Shared.Util.Objects)
+local Store = require(ServerScriptService.Server.Accounts.Store)
+local AccountStore = require(ServerScriptService.Server.Stores.AccountStore)
+local BusinessStore = require(ServerScriptService.Server.Stores.BusinessStore)
+
+type Account = AccountTypes.Account
 type BusinessState = BusinessTypes.BusinessState
 type ShelfState = BusinessTypes.ShelfState
 
 local activeBusinesses: { [string]: BusinessState } = {}
 local businessByOwner: { [number]: string } = {}
+
+local function getNumber(value: any, fallback: number): number
+	return if typeof(value) == "number" then value else fallback
+end
+
+local function withFinanceDefaults(account: Account): Account
+	local accountData = account :: any
+	local defaults = {}
+
+	if typeof(accountData.PendingCardPayout) ~= "number" then
+		defaults.PendingCardPayout = 0
+	end
+	if typeof(accountData.ClaimableCardPayout) ~= "number" then
+		defaults.ClaimableCardPayout = 0
+	end
+	if typeof(accountData.LastBankDay) ~= "number" then
+		defaults.LastBankDay = 0
+	end
+
+	return Objects.join(account, defaults)
+end
+
+local function syncFinanceToProfile(business: BusinessState)
+	local player = Players:GetPlayerByUserId(business.ownerUserId)
+	if not player then
+		return
+	end
+
+	Store:updateImmutable(player, function(account: Account)
+		return Objects.join(withFinanceDefaults(account), {
+			Cash = business.cash,
+			PendingCardPayout = business.store.pendingCardPayout,
+			ClaimableCardPayout = business.store.claimableCardPayout,
+			LastBankDay = business.store.currentBankDay,
+		})
+	end)
+end
+
+local function publishBusiness(business: BusinessState)
+	BusinessStore.setBusiness(business)
+end
 
 local BusinessService = {}
 
@@ -78,15 +128,33 @@ function BusinessService.CreateBusinessForPlayer(player: Player): BusinessState
 	end
 
 	local businessId = `business_{player.UserId}`
+	local account = AccountStore.getAccount(player.Name)
+	local accountData = account :: any
+	local startingCash = 5000
+	local pendingCardPayout = 0
+	local claimableCardPayout = 0
+	local currentBankDay = 0
+	if account then
+		if getNumber(accountData.LastJoinTime, 0) ~= 0 or getNumber(accountData.Cash, 0) > 0 then
+			startingCash = getNumber(accountData.Cash, startingCash)
+		end
+		pendingCardPayout = getNumber(accountData.PendingCardPayout, 0)
+		claimableCardPayout = getNumber(accountData.ClaimableCardPayout, 0)
+		currentBankDay = getNumber(accountData.LastBankDay, 0)
+	end
+
 	local business: BusinessState = {
 		id = businessId,
 		ownerUserId = player.UserId,
-		cash = 5000,
+		cash = startingCash,
 		reputation = 50,
 		store = {
 			shelves = createDefaultShelves(), -- mock shelves
 			checkoutQueueLength = 0,
 			checkoutQueueSlots = {},
+			pendingCardPayout = pendingCardPayout,
+			claimableCardPayout = claimableCardPayout,
+			currentBankDay = currentBankDay,
 			open = true,
 		},
 		warehouse = {
@@ -124,6 +192,8 @@ function BusinessService.CreateBusinessForPlayer(player: Player): BusinessState
 
 	activeBusinesses[businessId] = business
 	businessByOwner[player.UserId] = businessId -- can easily access busy through userId
+	syncFinanceToProfile(business)
+	publishBusiness(business)
 	return business
 end
 
@@ -143,6 +213,10 @@ function BusinessService.GetActiveBusinesses(): { [string]: BusinessState }
     return activeBusinesses
 end
 
+function BusinessService.PublishBusiness(business: BusinessState)
+	publishBusiness(business)
+end
+
 function BusinessService.ValdiateOwnership(player: Player, businessId: string): boolean
     local business = activeBusinesses[businessId]
 	return business ~= nil and business.ownerUserId == player.UserId
@@ -157,7 +231,49 @@ function BusinessService.AddMoney(businessId: string, amount: number, reason: st
 	end
 
 	business.cash += math.max(0, amount)
+	syncFinanceToProfile(business)
+	publishBusiness(business)
 	return true    
+end
+
+function BusinessService.AddPendingCardPayout(businessId: string, amount: number, reason: string?): boolean
+	local business = activeBusinesses[businessId]
+	if not business then
+		return false
+	end
+
+	business.store.pendingCardPayout += math.max(0, amount)
+	syncFinanceToProfile(business)
+	publishBusiness(business)
+	return true
+end
+
+function BusinessService.AdvanceCardPayoutDay(business: BusinessState)
+	business.store.currentBankDay += 1
+	if business.store.pendingCardPayout > 0 then
+		business.store.claimableCardPayout += business.store.pendingCardPayout
+		business.store.pendingCardPayout = 0
+	end
+	syncFinanceToProfile(business)
+	publishBusiness(business)
+end
+
+function BusinessService.ClaimCardPayout(player: Player): number
+	local business = BusinessService.GetBusinessForPlayer(player)
+	if not business then
+		return 0
+	end
+
+	local amount = math.max(0, business.store.claimableCardPayout)
+	if amount <= 0 then
+		return 0
+	end
+
+	business.store.claimableCardPayout = 0
+	business.cash += amount
+	syncFinanceToProfile(business)
+	publishBusiness(business)
+	return amount
 end
 
 function BusinessService.LoadBusiness(player: Player): BusinessState
@@ -178,6 +294,7 @@ function BusinessService.RemoveBusiness(businessId: string)
 
     businessByOwner[business.ownerUserId] = nil
     activeBusinesses[businessId] = nil
+	BusinessStore.removeBusiness(businessId)
 end
 
 return BusinessService

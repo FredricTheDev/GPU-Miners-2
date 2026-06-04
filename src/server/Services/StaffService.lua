@@ -17,6 +17,8 @@ type StaffServiceType = RuntimeTypes.ModuleRuntimeType & {
 
 	_worldQueryService: any?,
 	_avatarService: any?,
+	_customerService: any?,
+	_checkoutService: any?,
 
 	Configure: (self: StaffServiceType, registry: any) -> (),
 	OnInit: (self: StaffServiceType) -> (),
@@ -42,7 +44,7 @@ local StaffService = {} :: StaffServiceType
 
 StaffService.Name = "StaffService"
 StaffService.Priority = 0
-StaffService.Dependencies = {}
+StaffService.Dependencies = { "CustomerService", "CheckoutService" }
 StaffService.Disabled = false
 
 local taskCounter = 0
@@ -80,6 +82,8 @@ function StaffService:Configure(registry)
 
 	self._worldQueryService = registry.WorldQueryService
 	self._avatarService = registry.AvatarService
+	self._customerService = registry.CustomerService
+	self._checkoutService = registry.CheckoutService
 end
 
 function StaffService:OnInit() end
@@ -152,9 +156,20 @@ function StaffService.SpawnPhysicalStaffAsync(business: BusinessState, staffMemb
 	CollectionService:AddTag(model, WorldTags.StaffNpc)
 end
 
+local function hasOpenTaskForTarget(business: BusinessState, taskType: StaffTaskType, targetId: string?): boolean
+	for _, task in business.staffTasks do
+		if task.taskType == taskType and task.targetId == targetId then
+			return true
+		end
+	end
+
+	return false
+end
+
 function StaffService.GenerateStoreTasks(business: BusinessState)
-	if business.store.checkoutQueueLength > 0 then
-		StaffService.CreateTask(business, "ServeCheckout", 50 + business.store.checkoutQueueLength, nil, 10)
+	local frontCustomerId = StaffService._customerService.GetFrontCheckoutCustomerId(business.id)
+	if frontCustomerId and not hasOpenTaskForTarget(business, "ServeCheckout", frontCustomerId) then
+		StaffService.CreateTask(business, "ServeCheckout", 50 + business.store.checkoutQueueLength, frontCustomerId, 10)
 	end
 
 	for _, shelf in business.store.shelves do
@@ -207,7 +222,9 @@ function StaffService.ResolveAssignedTasks(business: BusinessState, deltaSeconds
             -- but when we have actual pathfinding systems we will need to resolve the task when the npc
             -- physically moves to it and does it
             if task.taskType == "ServeCheckout" then
-                business.store.checkoutQueueLength = math.max(0, business.store.checkoutQueueLength - 1)
+				if task.targetId then
+					StaffService._checkoutService.CompleteCheckoutByStaff(business.id, task.targetId, staffMember.id)
+				end
             elseif task.taskType == "PatrolStore" then
                 business.security.securityLevel = math.clamp(business.security.securityLevel + 0.1, 0, 100)
             end

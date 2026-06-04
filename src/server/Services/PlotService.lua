@@ -93,7 +93,6 @@ function PlotService:AssignPlot(player: Player, plotIndex: number): ()
 		Models = { Store = storeClone },
 	} :: PlotData
 
-	print(`Setting {player.Name} plot {plotIndex}`)
 	self:SpawnPlayerAtPlot(player)
 
 	self._registry.BusinessService.LoadBusiness(player)
