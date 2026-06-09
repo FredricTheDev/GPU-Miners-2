@@ -76,6 +76,7 @@ local DIRECT_TARGET_DISTANCE = 18
 local ROUTE_WAYPOINT_REACH_DISTANCE = 2.35
 local FINAL_REACH_DISTANCE = 2.35
 local ARRIVAL_HYSTERESIS_DISTANCE = 1.1
+local CHECKOUT_FINAL_ARRIVAL_HYSTERESIS = 0.35
 
 local ROUTE_GUIDE_ADVANCE_DISTANCE = 5.75
 local ROUTE_CORNER_CUT_DISTANCE = 7
@@ -317,7 +318,8 @@ function MovementHelper:_runPathTo(
 	targetPosition: Vector3,
 	getRunning: () -> boolean,
 	moveToken: number,
-	arrivalDistance: number?
+	arrivalDistance: number?,
+	arrivalHysteresis: number?
 ): boolean
 	if self.debug and self.debug.SetCurrentPathTarget then
 		self.debug:SetCurrentPathTarget(targetPosition)
@@ -326,7 +328,7 @@ function MovementHelper:_runPathTo(
 	debugStatus(self.debug, `SimplePath :: ({math.floor(targetPosition.X)}, {math.floor(targetPosition.Z)})`)
 
 	local dist = arrivalDistance or NODE_ARRIVAL_DISTANCE
-	local softDist = dist + ARRIVAL_HYSTERESIS_DISTANCE
+	local softDist = dist + (arrivalHysteresis or ARRIVAL_HYSTERESIS_DISTANCE)
 
 	if isCloseEnoughToTarget(self.root, targetPosition, softDist) then
 		return true
@@ -604,8 +606,11 @@ function MovementHelper:MoveAlongRoute(
 		local reachDistance = if isFinalWaypoint
 			then finalReachDistance or FINAL_REACH_DISTANCE
 			else ROUTE_WAYPOINT_REACH_DISTANCE
+		local reachHysteresis = if isFinalWaypoint and moveMode == "Checkout"
+			then CHECKOUT_FINAL_ARRIVAL_HYSTERESIS
+			else ARRIVAL_HYSTERESIS_DISTANCE
 
-		if isCloseEnoughToTarget(self.root, targetPosition, reachDistance + ARRIVAL_HYSTERESIS_DISTANCE) then
+		if isCloseEnoughToTarget(self.root, targetPosition, reachDistance + reachHysteresis) then
 			self.routeIndex += 1
 			continue
 		end
@@ -650,7 +655,7 @@ function MovementHelper:MoveAlongRoute(
 			local shouldUseGuideSteering = moveMode ~= "Shelf"
 
 			if isFinalWaypoint or not shouldUseGuideSteering then
-				legReached = self:_runPathTo(targetPosition, getRunning, moveToken, reachDistance)
+				legReached = self:_runPathTo(targetPosition, getRunning, moveToken, reachDistance, reachHysteresis)
 			else
 				local moveTarget = self:GetRouteGuideTarget(self.routeIndex)
 				legReached = self:_steerToGuideTarget(
@@ -682,7 +687,7 @@ function MovementHelper:MoveAlongRoute(
 						debugStatus(self.debug, `alternate node: {alternate.nodeId}`)
 						self.routeWaypoints[self.routeIndex] = alternate.cframe
 						targetPosition = alternate.cframe.Position
-						legReached = self:_runPathTo(targetPosition, getRunning, moveToken, reachDistance)
+						legReached = self:_runPathTo(targetPosition, getRunning, moveToken, reachDistance, reachHysteresis)
 					end
 				end
 			end
@@ -743,7 +748,8 @@ function MovementHelper:MoveToTarget(
 			targetCFrame.Position,
 			getRunning,
 			self.moveToken,
-			finalReachDistance or FINAL_REACH_DISTANCE
+			finalReachDistance or FINAL_REACH_DISTANCE,
+			if moveMode == "Checkout" then CHECKOUT_FINAL_ARRIVAL_HYSTERESIS else nil
 		)
 	end
 

@@ -60,6 +60,7 @@ local DIRECT_EXIT_ROUTE_MAX_DISTANCE = 120
 local EXIT_DIRECT_CLEARANCE_RADIUS = 2.75
 local DIRECT_CHECKOUT_ROUTE_MAX_DISTANCE = 36
 local CHECKOUT_DIRECT_CLEARANCE_RADIUS = 3.25
+local SHELF_ROUTE_NODE_PENALTY = 10
 
 local function parseConnectedNodes(value: any): { string }
 	if typeof(value) ~= "string" or value == "" then
@@ -316,6 +317,17 @@ local function findNearestVisibleNode(graph: StoreGraph, position: Vector3): Nav
 	end
 
 	return bestNode
+end
+
+local function getRouteNodePenalty(
+	node: NavNode,
+	routeMode: ("Shelf" | "Checkout" | "Exit" | "General")?
+): number
+	if routeMode == "Shelf" and node.nodeType == "Shelf" then
+		return SHELF_ROUTE_NODE_PENALTY
+	end
+
+	return 0
 end
 
 local function simplifyRoute(businessId: string, fromPosition: Vector3, waypoints: { CFrame }): { CFrame }
@@ -602,7 +614,12 @@ local function reconstructPath(
 	return path
 end
 
-function StoreNavigationService.FindRoute(businessId: string, fromNodeId: string, toNodeId: string): { NavNode }
+function StoreNavigationService.FindRoute(
+	businessId: string,
+	fromNodeId: string,
+	toNodeId: string,
+	routeMode: ("Shelf" | "Checkout" | "Exit" | "General")?
+): { NavNode }
 	local graph = StoreNavigationService.BuildGraph(businessId)
 
 	if fromNodeId == toNodeId then
@@ -650,7 +667,7 @@ function StoreNavigationService.FindRoute(businessId: string, fromNodeId: string
 				continue
 			end
 
-			local tentativeG = (gScore[currentId] or math.huge) + edgeCost
+			local tentativeG = (gScore[currentId] or math.huge) + edgeCost + getRouteNodePenalty(neighbor, routeMode)
 
 			if tentativeG < (gScore[neighborId] or math.huge) then
 				cameFrom[neighborId] = currentId
@@ -741,7 +758,7 @@ function StoreNavigationService.FindRouteBetweenPositions(
 		return { CFrame.new(toPosition) }
 	end
 
-	local nodePath = StoreNavigationService.FindRoute(businessId, startNode.nodeId, goalNode.nodeId)
+	local nodePath = StoreNavigationService.FindRoute(businessId, startNode.nodeId, goalNode.nodeId, routeMode)
 
 	local waypoints: { CFrame } = {}
 	for index, node in nodePath do
@@ -818,33 +835,19 @@ function StoreNavigationService.FindRouteToShelf(
 end
 
 function StoreNavigationService.FindRouteToCheckout(
-	businessId: string,
-	fromPosition: Vector3,
+	_businessId: string,
+	_fromPosition: Vector3,
 	checkoutCFrame: CFrame
 ): { CFrame }
-	local checkoutNode = StoreNavigationService.FindNodeByType(businessId, "Checkout")
-
-	return StoreNavigationService.FindRouteBetweenPositions(
-		businessId,
-		fromPosition,
-		checkoutCFrame.Position,
-		if checkoutNode then checkoutNode.nodeId else nil,
-		"Checkout"
-	)
+	return { checkoutCFrame }
 end
 
 function StoreNavigationService.FindRouteToExit(
-	businessId: string,
-	fromPosition: Vector3,
+	_businessId: string,
+	_fromPosition: Vector3,
 	exitCFrame: CFrame
 ): { CFrame }
-	return StoreNavigationService.FindRouteBetweenPositions(
-		businessId,
-		fromPosition,
-		exitCFrame.Position,
-		nil,
-		"Exit"
-	)
+	return { exitCFrame }
 end
 
 function StoreNavigationService.GetAlternateNode(
