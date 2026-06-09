@@ -725,7 +725,7 @@ function MovementHelper:MoveToTarget(
 	local route = buildRoute(self.root.Position)
 
 	if not route or #route == 0 then
-		debugStatus(self.debugm, "no valid node route")
+		debugStatus(self.debug, "no valid node route")
 		return false
 	end
 

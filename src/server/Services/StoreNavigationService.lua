@@ -58,6 +58,8 @@ local SEGMENT_SIDE_OFFSETS = { -1, -0.5, 0, 0.5, 1 }
 
 local DIRECT_EXIT_ROUTE_MAX_DISTANCE = 120
 local EXIT_DIRECT_CLEARANCE_RADIUS = 2.75
+local DIRECT_CHECKOUT_ROUTE_MAX_DISTANCE = 36
+local CHECKOUT_DIRECT_CLEARANCE_RADIUS = 3.25
 
 local function parseConnectedNodes(value: any): { string }
 	if typeof(value) ~= "string" or value == "" then
@@ -693,6 +695,18 @@ function StoreNavigationService.FindRouteBetweenPositions(
 		end
 	end
 
+	if routeMode == "Checkout" then
+		if canUseDirectRoute(graph, fromPosition, toPosition, DIRECT_CHECKOUT_ROUTE_MAX_DISTANCE, CHECKOUT_DIRECT_CLEARANCE_RADIUS) then
+			return { CFrame.new(toPosition) }
+		end
+	end
+
+	if routeMode == "Shelf" then
+		if canUseDirectRoute(graph, fromPosition, toPosition, DIRECT_ROUTE_MAX_DISTANCE, NPC_ROUTE_CLEARANCE_RADIUS) then
+			return { CFrame.new(toPosition) }
+		end
+	end
+
 	local startNode = findNearestVisibleNode(graph, fromPosition)
 
 	if not startNode then
@@ -794,13 +808,11 @@ function StoreNavigationService.FindRouteToShelf(
 	shelfId: string,
 	browseCFrame: CFrame
 ): { CFrame }
-	local shelfNode = StoreNavigationService.FindNodeForShelf(businessId, shelfId)
-
 	return StoreNavigationService.FindRouteBetweenPositions(
 		businessId,
 		fromPosition,
 		browseCFrame.Position,
-		if shelfNode then shelfNode.nodeId else nil,
+		nil,
 		"Shelf"
 	)
 end

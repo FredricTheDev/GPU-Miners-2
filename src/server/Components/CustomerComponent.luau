@@ -1647,7 +1647,13 @@ function CustomerComponent:MoveToCheckoutEntrance(): boolean
 		return StoreNavigationService.FindRouteToCheckout(self.BusinessId, fromPosition, checkoutCFrame)
 	end
 
-	local reached = self:MoveToCFrame(checkoutCFrame, routeBuilder)
+	local reached = self:MoveToCFrame(
+		checkoutCFrame,
+		routeBuilder,
+		nil,
+		CHECKOUT_SLOT_REACH_DISTANCE,
+		"Checkout"
+	)
 
 	if reached then
 		self:SnapFaceToCFrame(checkoutCFrame)
