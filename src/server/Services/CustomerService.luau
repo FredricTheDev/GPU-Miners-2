@@ -53,6 +53,7 @@ type CustomerServiceType = RuntimeTypes.ModuleRuntimeType & {
 	_avatarService: any?,
 	_securityService: any?,
 	_businessService: any?,
+	_rankService: any?,
 
 	Configure: (self: CustomerServiceType, registry: any) -> (),
 	OnInit: (self: CustomerServiceType) -> (),
@@ -97,7 +98,7 @@ local CustomerService = {} :: CustomerServiceType
 
 CustomerService.Name = "CustomerService"
 CustomerService.Priority = 0
-CustomerService.Dependencies = { "StoreService", "AvatarService", "SecurityService" }
+CustomerService.Dependencies = { "StoreService", "AvatarService", "SecurityService", "RankService" }
 CustomerService.Disabled = false
 
 local customerCounter = 0
@@ -747,10 +748,16 @@ local function saveCustomerReview(business: BusinessState, customer: CustomerRun
 		local memories = table.clone(getCustomerMemories(account))
 		memories[memoryKey] = updateCustomerMemory(memories[memoryKey], review)
 
-		return Objects.join(account, {
+		local updatedAccount = Objects.join(account, {
 			CustomerReviews = reviews,
 			CustomerMemoriesByAvatarUserId = memories,
 		})
+
+		if CustomerService._rankService then
+			updatedAccount = CustomerService._rankService.ApplyCustomerReviewToAccount(updatedAccount, review)
+		end
+
+		return updatedAccount
 	end)
 
 	customer.reviewSaved = true
@@ -972,6 +979,7 @@ function CustomerService:Configure(registry)
 	self._storeService = registry.StoreService
 	self._securityService = registry.SecurityService
 	self._businessService = registry.BusinessService
+	self._rankService = registry.RankService
 end
 
 function CustomerService:OnInit() end

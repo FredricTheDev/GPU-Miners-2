@@ -7,11 +7,11 @@ local BusinessTypes = require(ReplicatedStorage.Shared.Types.BusinessTypes)
 type BusinessState = BusinessTypes.BusinessState
 type ShelfState = BusinessTypes.ShelfState
 
-local StoreService = {}
+local StoreService = {} :: any
 
 StoreService.Name = "StoreService"
 StoreService.Priority = 0
-StoreService.Dependencies = {}
+StoreService.Dependencies = { "RankService" }
 StoreService.Disabled = false
 
 -- mock for testing until have real gpus
@@ -23,6 +23,10 @@ local BASE_GPU_PRICES: { [string]: number } = {
 	fx_6500 = 1800,
 	fx_6600 = 2200,
 }
+
+function StoreService:OnConfigure(registry)
+	self._rankService = registry.RankService
+end
 
 function StoreService:OnInit() end
 
@@ -160,6 +164,9 @@ function StoreService.RestockShelfFromInventory(business: BusinessState, shelfId
 	business.warehouse.inventory[shelf.gpuId] = available - moved
 	shelf.stockAmount += moved
 	business.warehouse.usedCapacity = math.max(0, business.warehouse.usedCapacity - moved)
+	if StoreService._rankService then
+		StoreService._rankService.AddBusinessRankValue(business, "Stock", moved * 25)
+	end
 	return moved
 end
 

@@ -6,6 +6,7 @@ local AccountTypes = require(ReplicatedStorage.Shared.Types.AccountTypes)
 type Account = AccountTypes.Account
 type CustomerReview = AccountTypes.CustomerReview
 type CustomerMemory = AccountTypes.CustomerMemory
+type RankFieldProgress = AccountTypes.RankFieldProgress
 
 local customerReviewSchema: CustomerReview = gt.table({
 	id = gt.string(),
@@ -43,6 +44,14 @@ local customerMemorySchema: CustomerMemory = gt.table({
 	totalStolenValue = gt.number(),
 })
 
+local rankFieldProgressSchema: RankFieldProgress = gt.table({
+	Field = gt.string(),
+	Value = gt.number(),
+	RankIndex = gt.number(),
+	RankName = gt.string(),
+	Polarity = gt.string(),
+})
+
 local accountSchema: Account = gt.table({
 	Cash = gt.number(),
 	PendingCardPayout = gt.number(),
@@ -56,6 +65,10 @@ local accountSchema: Account = gt.table({
 
 	CustomerReviews = { customerReviewSchema },
 	CustomerMemoriesByAvatarUserId = { [gt.string()] = customerMemorySchema },
+
+	RankFields = { [gt.string()] = rankFieldProgressSchema },
+	OverallRank = rankFieldProgressSchema,
+	OverallKnownRank = gt.string(),
 })
 
 return gt.build(accountSchema)

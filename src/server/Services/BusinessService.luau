@@ -58,7 +58,7 @@ local function publishBusiness(business: BusinessState)
 	BusinessStore.setBusiness(business)
 end
 
-local BusinessService = {}
+local BusinessService = {} :: any
 
 BusinessService.Name = "BusinessService"
 BusinessService.Priority = 0
@@ -251,7 +251,11 @@ function BusinessService.AddMoney(businessId: string, amount: number, reason: st
 		return false
 	end
 
-	business.cash += math.max(0, amount)
+	local addedAmount = math.max(0, amount)
+	business.cash += addedAmount
+	if addedAmount > 0 and BusinessService.registry and BusinessService.registry.RankService then
+		BusinessService.registry.RankService.AddBusinessRankValue(business, "CustomerService", addedAmount / 100)
+	end
 	syncFinanceToProfile(business)
 	publishBusiness(business)
 	return true    
@@ -263,7 +267,11 @@ function BusinessService.AddPendingCardPayout(businessId: string, amount: number
 		return false
 	end
 
-	business.store.pendingCardPayout += math.max(0, amount)
+	local addedAmount = math.max(0, amount)
+	business.store.pendingCardPayout += addedAmount
+	if addedAmount > 0 and BusinessService.registry and BusinessService.registry.RankService then
+		BusinessService.registry.RankService.AddBusinessRankValue(business, "CustomerService", addedAmount / 100)
+	end
 	syncFinanceToProfile(business)
 	publishBusiness(business)
 	return true

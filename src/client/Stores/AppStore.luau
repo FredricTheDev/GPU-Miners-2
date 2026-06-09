@@ -35,6 +35,14 @@ local getClock = Charm.computed(function(previousClock)
 	}
 end)
 
+local getRankFields = Charm.computed(function()
+	return getAccount().RankFields
+end)
+
+local getOverallRank = Charm.computed(function()
+	return getAccount().OverallRank
+end)
+
 local getCustomers = Charm.computed(function()
 	local business = getBusiness()
 	return if business then business.customers else {}
@@ -45,6 +53,8 @@ return {
 	setAccount = setAccount,
 	getCash = getCash,
 	getClock = getClock,
+	getRankFields = getRankFields,
+	getOverallRank = getOverallRank,
 	getBusiness = getBusiness,
 	setBusiness = setBusiness,
 	getCustomers = getCustomers,

@@ -19,6 +19,7 @@ type SecurityServiceType = RuntimeTypes.ModuleRuntimeType & {
 	_storeService: any?,
 	_staffService: any?,
 	_worldQueryService: any?,
+	_rankService: any?,
 
 	Configure: (self: SecurityServiceType, registry: any) -> (),
 	OnInit: (self: SecurityServiceType) -> (),
@@ -45,7 +46,7 @@ local DEFAULT_CAMERA_FOV_DEGREES = 70
 
 SecurityService.Name = "SecurityService"
 SecurityService.Priority = 0
-SecurityService.Dependencies = {}
+SecurityService.Dependencies = { "RankService" }
 SecurityService.Disabled = false
 
 local function countCustomers(business: BusinessState): number
@@ -107,6 +108,7 @@ function SecurityService:Configure(registry)
 	self._storeService = registry.StoreService
 	self._staffService = registry.StaffService
 	self._worldQueryService = registry.WorldQueryService
+	self._rankService = registry.RankService
 end
 
 function SecurityService:OnInit() end
@@ -208,7 +210,9 @@ function SecurityService.ResolvePhysicalTheftAttempt(
 		customer.state = "Leaving"
 		business.security.lastTheftDetectedAt = os.clock()
 		SecurityService._staffService.CreateTask(business, "ChaseThief", 95, customer.id, 20)
-
+		if SecurityService._rankService then
+			SecurityService._rankService.AddBusinessRankValue(business, "Security", 80)
+		end
 		-- todo: tell client theft was detected
 	end
 
@@ -222,7 +226,10 @@ end
 
 function SecurityService.UpdateSecurity(business: BusinessState, deltaSeconds: number)
 	business.security.securityLevel = SecurityService.CalculateSecurityLevel(business)
-
+	if SecurityService._rankService then
+		SecurityService._rankService.SetBusinessRankValue(business, "Security", business.security.securityLevel)
+	end
+	
 	for customerId, customer in business.customers do
 		if customer.physicalModelName ~= nil then
 			continue
@@ -235,7 +242,9 @@ function SecurityService.UpdateSecurity(business: BusinessState, deltaSeconds: n
 			if detected then
 				business.security.lastTheftDetectedAt = os.clock()
 				SecurityService._staffService.CreateTask(business, "ChaseThief", 90, customerId, 15)
-
+				if SecurityService._rankService then
+					SecurityService._rankService.AddBusinessRankValue(business, "Security", 60)
+				end
 				-- todo: tell client that the thief was stopped
 				-- todo: allow user to report caught thiefs, so if they come back they can be kicked out
 			else

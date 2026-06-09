@@ -46,6 +46,16 @@ export type CustomerMemory = {
 	totalStolenValue: number,
 }
 
+export type RankField = "CustomerService" | "Security" | "Stock" | "Mining"
+
+export type RankFieldProgress = {
+	Field: RankField,
+	Value: number,
+	RankIndex: number,
+	RankName: string,
+	Polarity: string,
+}
+
 export type Account = {
 	Cash: number,
 	PendingCardPayout: number,
@@ -59,6 +69,41 @@ export type Account = {
 
 	CustomerReviews: { CustomerReview },
 	CustomerMemoriesByAvatarUserId: { [string]: CustomerMemory },
+
+	RankFields: { [RankField]: RankFieldProgress },
+	OverallRank: RankFieldProgress,
+	OverallKnownRank: string,
+}
+
+local defaultRankFields: { [RankField]: RankFieldProgress } = {
+	CustomerService = {
+		Field = "CustomerService",
+		Value = 0,
+		RankIndex = 1,
+		RankName = "Rude Reseller",
+		Polarity = "Positive",
+	},
+	Security = {
+		Field = "Security",
+		Value = 0,
+		RankIndex = 1,
+		RankName = "Easy Target",
+		Polarity = "Positive",
+	},
+	Stock = {
+		Field = "Stock",
+		Value = 0,
+		RankIndex = 1,
+		RankName = "Empty Shelfer",
+		Polarity = "Positive",
+	},
+	Mining = {
+		Field = "Mining",
+		Value = 0,
+		RankIndex = 1,
+		RankName = "Single Rig Miner",
+		Polarity = "Positive",
+	},
 }
 
 local accountTemplate: Account = {
@@ -74,6 +119,10 @@ local accountTemplate: Account = {
 
 	CustomerReviews = {},
 	CustomerMemoriesByAvatarUserId = {},
+
+	RankFields = defaultRankFields,
+	OverallRank = defaultRankFields.CustomerService,
+	OverallKnownRank = defaultRankFields.CustomerService.RankName,
 }
 
 return {

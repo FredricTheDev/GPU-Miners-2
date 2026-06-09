@@ -19,6 +19,7 @@ type StaffServiceType = RuntimeTypes.ModuleRuntimeType & {
 	_avatarService: any?,
 	_customerService: any?,
 	_checkoutService: any?,
+	_storeService: any?,
 
 	Configure: (self: StaffServiceType, registry: any) -> (),
 	OnInit: (self: StaffServiceType) -> (),
@@ -44,7 +45,7 @@ local StaffService = {} :: StaffServiceType
 
 StaffService.Name = "StaffService"
 StaffService.Priority = 0
-StaffService.Dependencies = { "CustomerService", "CheckoutService" }
+StaffService.Dependencies = { "CustomerService", "CheckoutService", "StoreService" }
 StaffService.Disabled = false
 
 local taskCounter = 0
@@ -84,6 +85,7 @@ function StaffService:Configure(registry)
 	self._avatarService = registry.AvatarService
 	self._customerService = registry.CustomerService
 	self._checkoutService = registry.CheckoutService
+	self._storeService = registry.StoreService
 end
 
 function StaffService:OnInit() end
@@ -224,6 +226,10 @@ function StaffService.ResolveAssignedTasks(business: BusinessState, deltaSeconds
             if task.taskType == "ServeCheckout" then
 				if task.targetId then
 					StaffService._checkoutService.CompleteCheckoutByStaff(business.id, task.targetId, staffMember.id)
+				end
+			elseif task.taskType == "RestockShelf" then
+				if task.targetId then
+					StaffService._storeService.RestockShelfFromInventory(business, task.targetId)
 				end
             elseif task.taskType == "PatrolStore" then
                 business.security.securityLevel = math.clamp(business.security.securityLevel + 0.1, 0, 100)

@@ -15,6 +15,7 @@ type LogisticsServiceType = RuntimeTypes.ModuleRuntimeType & {
 				expiresAfterSeconds: number?
 			) -> StaffTask,
 		},
+		RankService: any?,
 	},
 
 	Configure: (self: LogisticsServiceType, registry: any) -> (),
@@ -34,7 +35,7 @@ local LogisticsService = {} :: LogisticsServiceType
 
 LogisticsService.Name = "LogisticsService"
 LogisticsService.Priority = 0
-LogisticsService.Dependencies = { "StaffService" }
+LogisticsService.Dependencies = { "StaffService", "RankService" }
 LogisticsService.Disabled = false
 
 local deliveryCounter = 0
@@ -97,6 +98,9 @@ function LogisticsService.UpdateDeliveries(business: BusinessState, deltaSeconds
 			business.warehouse.inventory[delivery.gpuId] = (business.warehouse.inventory[delivery.gpuId] or 0)
 				+ addedQuantity
 			business.warehouse.usedCapacity += addedQuantity
+			if addedQuantity > 0 and LogisticsService.registry.RankService then
+				LogisticsService.registry.RankService.AddBusinessRankValue(business, "Stock", addedQuantity * 15)
+			end
 			delivery.state = "Complete"
 		end
 	end

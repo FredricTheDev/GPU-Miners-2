@@ -21,6 +21,7 @@ type MiningServiceType = RuntimeTypes.ModuleRuntimeType & {
                 expiresAfterSeconds: number?
             ) -> StaffTask
 		},
+        RankService: any,
 	},
 
 	Configure: (self: MiningServiceType, registry: any) -> (),
@@ -35,7 +36,7 @@ local MiningService = {} :: MiningServiceType
 
 MiningService.Name = "MiningService"
 MiningService.Priority = 0
-MiningService.Dependencies = { "StaffService" }
+MiningService.Dependencies = { "StaffService", "RankService" }
 MiningService.Disabled = false
 
 function MiningService:Configure(registry)
@@ -48,10 +49,15 @@ function MiningService:OnStart() end
 
 function MiningService.AddMiningRig(business: BusinessState, rig: MiningRig)
     business.miningRigs[rig.id] = rig
+    if MiningService.registry.RankService then
+        MiningService.registry.RankService.SetBusinessRankValue(business, "Mining", rig.hashrate)
+    end
 end
 
 function MiningService.UpdateMiningRigs(business: BusinessState, deltaSeconds: number)
+    local totalHashrate = 0
     for _, rig in business.miningRigs do
+        totalHashrate += rig.hashrate
         if rig.running and rig.condition > 0 then
             local grossProfit = BusinessMath.CalculateMiningProfit(
                 rig.hashrate,
@@ -76,6 +82,9 @@ function MiningService.UpdateMiningRigs(business: BusinessState, deltaSeconds: n
         else
             rig.heat = math.max(0, rig.heat - deltaSeconds * 0.5)
         end
+    end
+    if totalHashrate > 0 and MiningService.registry.RankService then
+        MiningService.registry.RankService.SetBusinessRankValue(business, "Mining", totalHashrate)
     end
 end
 
