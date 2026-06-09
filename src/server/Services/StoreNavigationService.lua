@@ -19,6 +19,7 @@ export type StoreGraph = {
 	businessId: string,
 	nodes: { [string]: NavNode },
 	walkZones: { BasePart },
+	edges: { [string]: { [string]: number } }
 }
 
 local StoreNavigationService = {}
@@ -45,6 +46,18 @@ local CORNER_RADIUS = 2.75
 local MIN_CORNER_SEGMENT_LENGTH = 4
 local DIRECT_ROUTE_MAX_DISTANCE = 24
 local DIRECT_ROUTE_SAMPLE_SPACING = 4
+
+local AUTO_NODE_LINK_DISTANCE = 20
+local DIRECT_TARGET_CLEAR_DISTANCE = 10
+
+local NPC_ROUTE_CLEARANCE_RADIUS = 3.25
+local NPC_SHORTCUT_CLEARANCE_RADIUS = 4
+local NPC_CORNER_CLEARANCE_RADIUS = 4
+local SEGMENT_RAY_HEIGHTS = { 1.5, 3.25 }
+local SEGMENT_SIDE_OFFSETS = { -1, -0.5, 0, 0.5, 1 }
+
+local DIRECT_EXIT_ROUTE_MAX_DISTANCE = 120
+local EXIT_DIRECT_CLEARANCE_RADIUS = 2.75
 
 local function parseConnectedNodes(value: any): { string }
 	if typeof(value) ~= "string" or value == "" then
@@ -136,6 +149,173 @@ local function isSegmentInsideStore(businessId: string, fromPosition: Vector3, t
 	return true
 end
 
+local function getRaycastIgnoreList(graph: StoreGraph): { Instance }
+	local ignoreList: { Instance } = {}
+
+	for _, node in graph.nodes do
+		table.insert(ignoreList, node.instance)
+	end
+
+	for _, walkZone in graph.walkZones do
+		table.insert(ignoreList, walkZone)
+	end
+
+	local activeCustomers = workspace:FindFirstChild("ActiveCustomers")
+	if activeCustomers then
+		table.insert(ignoreList, activeCustomers)
+	end
+
+	local debugFolder = workspace:FindFirstChild("DebugCustomerPaths")
+	if debugFolder then
+		table.insert(ignoreList, debugFolder)
+	end
+
+	return ignoreList
+end
+
+local function isSegmentClearOfObstacles(
+	graph: StoreGraph,
+	fromPosition: Vector3,
+	toPosition: Vector3,
+	clearanceRadius: number?
+): boolean
+	local flatDirection = Vector3.new(
+		toPosition.X - fromPosition.X,
+		0,
+		toPosition.Z - fromPosition.Z
+	)
+
+	if flatDirection.Magnitude < 0.05 then
+		return true
+	end
+
+	local forward = flatDirection.Unit
+	local right = Vector3.new(forward.Z, 0, -forward.X)
+	local radius = clearanceRadius or NPC_ROUTE_CLEARANCE_RADIUS
+
+	local raycastParams = RaycastParams.new()
+	raycastParams.FilterType = Enum.RaycastFilterType.Exclude
+	raycastParams.FilterDescendantsInstances = getRaycastIgnoreList(graph)
+
+	local baseY = math.max(fromPosition.Y, toPosition.Y)
+
+	for _, sideAlpha in SEGMENT_SIDE_OFFSETS do
+		local sideOffset = right * radius * sideAlpha
+
+		for _, height in SEGMENT_RAY_HEIGHTS do
+			local origin = Vector3.new(fromPosition.X, baseY + height, fromPosition.Z) + sideOffset
+			local result = workspace:Raycast(origin, flatDirection, raycastParams)
+
+			if result then
+				return false
+			end
+		end
+	end
+
+	return true
+end
+
+local function addEdge(graph: StoreGraph, fromNodeId: string, toNodeId: string, cost: number)
+	graph.edges[fromNodeId] = graph.edges[fromNodeId] or {}
+	graph.edges[toNodeId] = graph.edges[toNodeId] or {}
+
+	graph.edges[fromNodeId][toNodeId] = cost
+	graph.edges[toNodeId][fromNodeId] = cost
+end
+
+local function getNodeAutoLinkDistance(node: NavNode): number
+	local value = node.instance:GetAttribute("AutoLinkDistance")
+
+	if typeof(value) == "number" then
+		return value
+	end
+
+	return AUTO_NODE_LINK_DISTANCE
+end
+
+local function buildAutoEdges(graph: StoreGraph)
+	local nodeList: { NavNode } = {}
+
+	for _, node in graph.nodes do
+		table.insert(nodeList, node)
+	end
+
+	for _, node in nodeList do
+		for _, otherNode in nodeList do
+			if node == otherNode then
+				continue
+			end
+
+			local distance = getFlatDistance(node.cframe.Position, otherNode.cframe.Position)
+			local maxDistance = math.max(getNodeAutoLinkDistance(node), getNodeAutoLinkDistance(otherNode))
+
+			if distance > maxDistance then
+				continue
+			end
+
+			if not isSegmentInsideStore(graph.businessId, node.cframe.Position, otherNode.cframe.Position) then
+				continue
+			end
+
+			if not isSegmentClearOfObstacles(graph, node.cframe.Position, otherNode.cframe.Position, NPC_ROUTE_CLEARANCE_RADIUS) then
+				continue
+			end
+
+			addEdge(graph, node.nodeId, otherNode.nodeId, distance)
+		end
+	end
+end
+
+local function canUseDirectRoute(
+	graph: StoreGraph,
+	fromPosition: Vector3,
+	toPosition: Vector3,
+	maxDistance: number,
+	clearanceRadius: number
+): boolean
+	local distance = getFlatDistance(fromPosition, toPosition)
+
+	if distance > maxDistance then
+		return false
+	end
+
+	if not isSegmentInsideStore(graph.businessId, fromPosition, toPosition) then
+		return false
+	end
+
+	if not isSegmentClearOfObstacles(graph, fromPosition, toPosition, clearanceRadius) then
+		return false
+	end
+
+	return true
+end
+
+local function findNearestVisibleNode(graph: StoreGraph, position: Vector3): NavNode?
+	local bestNode: NavNode? = nil
+	local bestDistance = math.huge
+
+	for _, node in graph.nodes do
+		local distance = getFlatDistance(position, node.cframe.Position)
+
+		if distance >= bestDistance then
+			continue
+		end
+
+		if not isSegmentInsideStore(graph.businessId, position, node.cframe.Position) then
+			continue
+		end
+
+		if not isSegmentClearOfObstacles(graph, position, node.cframe.Position) then
+			continue
+		end
+
+		bestNode = node
+		bestDistance = distance
+	end
+
+	return bestNode
+end
+
 local function simplifyRoute(businessId: string, fromPosition: Vector3, waypoints: { CFrame }): { CFrame }
 	if #waypoints <= 1 then
 		return waypoints
@@ -151,10 +331,12 @@ local function simplifyRoute(businessId: string, fromPosition: Vector3, waypoint
 		for testIndex = #waypoints, index, -1 do
 			local testPosition = waypoints[testIndex].Position
 			local distance = getFlatDistance(currentPosition, testPosition)
+			local graph = StoreNavigationService.BuildGraph(businessId)
 
 			if
 				distance <= DIRECT_ROUTE_MAX_DISTANCE
 				and isSegmentInsideStore(businessId, currentPosition, testPosition)
+				and isSegmentClearOfObstacles(graph, currentPosition, testPosition, NPC_SHORTCUT_CLEARANCE_RADIUS)
 			then
 				bestIndex = testIndex
 				break
@@ -180,7 +362,7 @@ local function cframeLookingAt(position: Vector3, lookTarget: Vector3): CFrame
 	return CFrame.lookAt(position, flatTarget)
 end
 
-local function roundRouteCorners(waypoints: { CFrame }): { CFrame }
+local function roundRouteCorners(businessId: string, waypoints: { CFrame }): { CFrame }
 	if #waypoints <= 2 then
 		return waypoints
 	end
@@ -188,6 +370,8 @@ local function roundRouteCorners(waypoints: { CFrame }): { CFrame }
 	local rounded: { CFrame } = {}
 
 	table.insert(rounded, waypoints[1])
+
+	local graph = StoreNavigationService.BuildGraph(businessId)
 
 	for index = 2, #waypoints - 1 do
 		local previousPosition = waypoints[index - 1].Position
@@ -215,8 +399,17 @@ local function roundRouteCorners(waypoints: { CFrame }): { CFrame }
 		local entryPosition = currentPosition + directionToPrevious * radius
 		local exitPosition = currentPosition + directionToNext * radius
 
-		table.insert(rounded, cframeLookingAt(entryPosition, currentPosition))
-		table.insert(rounded, cframeLookingAt(exitPosition, nextPosition))
+		local cornerIsSafe =
+			isSegmentClearOfObstacles(graph, previousPosition, entryPosition, NPC_CORNER_CLEARANCE_RADIUS)
+			and isSegmentClearOfObstacles(graph, entryPosition, exitPosition, NPC_CORNER_CLEARANCE_RADIUS)
+			and isSegmentClearOfObstacles(graph, exitPosition, nextPosition, NPC_CORNER_CLEARANCE_RADIUS)
+
+		if cornerIsSafe then
+			table.insert(rounded, cframeLookingAt(entryPosition, currentPosition))
+			table.insert(rounded, cframeLookingAt(exitPosition, nextPosition))
+		else
+			table.insert(rounded, waypoints[index])
+		end
 	end
 
 	table.insert(rounded, waypoints[#waypoints])
@@ -278,10 +471,13 @@ function StoreNavigationService.BuildGraph(businessId: string): StoreGraph
 		businessId = businessId,
 		nodes = nodes,
 		walkZones = walkZones,
+		edges = {}
 	}
 
 	graphCache[businessId] = graph
 	graphBuiltAt[businessId] = now
+
+	buildAutoEdges(graph)
 
 	return graph
 end
@@ -445,15 +641,14 @@ function StoreNavigationService.FindRoute(businessId: string, fromNodeId: string
 			continue
 		end
 
-		for _, neighborId in currentNode.connectedNodeIds do
+		for neighborId, edgeCost in graph.edges[currentId] or {} do
 			local neighbor = graph.nodes[neighborId]
 
 			if not neighbor then
 				continue
 			end
 
-			local tentativeG = (gScore[currentId] or math.huge)
-				+ (currentNode.cframe.Position - neighbor.cframe.Position).Magnitude
+			local tentativeG = (gScore[currentId] or math.huge) + edgeCost
 
 			if tentativeG < (gScore[neighborId] or math.huge) then
 				cameFrom[neighborId] = currentId
@@ -483,7 +678,8 @@ function StoreNavigationService.FindRouteBetweenPositions(
 	businessId: string,
 	fromPosition: Vector3,
 	toPosition: Vector3,
-	goalNodeId: string?
+	goalNodeId: string?,
+	routeMode: ("Shelf" | "Checkout" | "Exit" | "General")?
 ): { CFrame }
 	local graph = StoreNavigationService.BuildGraph(businessId)
 
@@ -491,7 +687,17 @@ function StoreNavigationService.FindRouteBetweenPositions(
 		return { CFrame.new(toPosition) }
 	end
 
-	local startNode = StoreNavigationService.FindNearestNode(businessId, fromPosition)
+	if routeMode == "Exit" then
+		if canUseDirectRoute(graph, fromPosition, toPosition, DIRECT_EXIT_ROUTE_MAX_DISTANCE, EXIT_DIRECT_CLEARANCE_RADIUS) then
+			return { CFrame.new(toPosition) }
+		end
+	end
+
+	local startNode = findNearestVisibleNode(graph, fromPosition)
+
+	if not startNode then
+		startNode = StoreNavigationService.FindNearestNode(businessId, fromPosition)
+	end
 
 	if not startNode then
 		return { CFrame.new(toPosition) }
@@ -501,8 +707,16 @@ function StoreNavigationService.FindRouteBetweenPositions(
 	local hasExplicitGoalNode = false
 
 	if goalNodeId then
-		goalNode = graph.nodes[goalNodeId]
-		hasExplicitGoalNode = goalNode ~= nil
+		local explicitGoalNode = graph.nodes[goalNodeId]
+
+		if explicitGoalNode and isSegmentClearOfObstacles(graph, explicitGoalNode.cframe.Position, toPosition) then
+			goalNode = explicitGoalNode
+			hasExplicitGoalNode = true
+		end
+	end
+
+	if not goalNode then
+		goalNode = findNearestVisibleNode(graph, toPosition)
 	end
 
 	if not goalNode then
@@ -514,8 +728,8 @@ function StoreNavigationService.FindRouteBetweenPositions(
 	end
 
 	local nodePath = StoreNavigationService.FindRoute(businessId, startNode.nodeId, goalNode.nodeId)
-	local waypoints: { CFrame } = {}
 
+	local waypoints: { CFrame } = {}
 	for index, node in nodePath do
 		local isFirst = index == 1
 		local isLast = index == #nodePath
@@ -571,7 +785,7 @@ function StoreNavigationService.FindRouteBetweenPositions(
 
 	waypoints = simplifyRoute(businessId, fromPosition, waypoints)
 
-	return roundRouteCorners(waypoints)
+	return roundRouteCorners(businessId, waypoints)
 end
 
 function StoreNavigationService.FindRouteToShelf(
@@ -586,7 +800,8 @@ function StoreNavigationService.FindRouteToShelf(
 		businessId,
 		fromPosition,
 		browseCFrame.Position,
-		if shelfNode then shelfNode.nodeId else nil
+		if shelfNode then shelfNode.nodeId else nil,
+		"Shelf"
 	)
 end
 
@@ -601,7 +816,8 @@ function StoreNavigationService.FindRouteToCheckout(
 		businessId,
 		fromPosition,
 		checkoutCFrame.Position,
-		if checkoutNode then checkoutNode.nodeId else nil
+		if checkoutNode then checkoutNode.nodeId else nil,
+		"Checkout"
 	)
 end
 
@@ -610,14 +826,12 @@ function StoreNavigationService.FindRouteToExit(
 	fromPosition: Vector3,
 	exitCFrame: CFrame
 ): { CFrame }
-	local exitNode = StoreNavigationService.FindNodeByType(businessId, "Exit")
-		or StoreNavigationService.FindNodeByType(businessId, "Entrance")
-
 	return StoreNavigationService.FindRouteBetweenPositions(
 		businessId,
 		fromPosition,
 		exitCFrame.Position,
-		if exitNode then exitNode.nodeId else nil
+		nil,
+		"Exit"
 	)
 end
 

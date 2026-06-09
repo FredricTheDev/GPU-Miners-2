@@ -680,8 +680,9 @@ local function createCustomerReview(customer: CustomerRuntimeState): CustomerRev
 end
 
 local function updateCustomerMemory(memory: CustomerMemory?, review: CustomerReview): CustomerMemory
-	local updated = if memory then table.clone(memory) else nil
-		or {
+	local updated = if memory
+		then table.clone(memory)
+		else nil or {
 			avatarUserId = review.avatarUserId,
 			visits = 0,
 			lastVisitedAt = 0,

@@ -110,6 +110,27 @@ local function createDefaultShelves(): { [string]: ShelfState }
 			maxStock = 12,
 			priceMultiplier = 1,
 		},
+		other_display_1 = {
+			id = "other_display_1",
+			gpuId = "exforce_oc_2050_super",
+			stockAmount = 6,
+			maxStock = 12,
+			priceMultiplier = 1,
+		},
+		other_display_2 = {
+			id = "other_display_2",
+			gpuId = "exforce_turbo_1200",
+			stockAmount = 6,
+			maxStock = 12,
+			priceMultiplier = 1,
+		},
+		other_display_3 = {
+			id = "other_display_3",
+			gpuId = "exforce_oc_2060",
+			stockAmount = 6,
+			maxStock = 12,
+			priceMultiplier = 1,
+		},
 	}
 end
 

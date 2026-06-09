@@ -41,13 +41,20 @@ export type MovementController = {
 	debug: any?,
 
 	SetRoute: (self: MovementController, waypoints: { CFrame }) -> (),
-	MoveAlongRoute: (self: MovementController, getRunning: () -> boolean, finalReachDistance: number?) -> boolean,
+	MoveAlongRoute: (
+		self: MovementController, 
+		getRunning: () -> boolean,
+		finalReachDistance: number?, 
+		finalReachDistance: number?
+	) -> boolean,
+
 	MoveToTarget: (
 		self: MovementController,
 		targetCFrame: CFrame,
 		buildRoute: (fromPosition: Vector3) -> { CFrame },
 		getRunning: () -> boolean,
-		finalReachDistance: number?
+		finalReachDistance: number?,
+		moveMode: ("Shelf" | "Checkout" | "Exit")?
 	) -> boolean,
 }
 
@@ -576,7 +583,11 @@ function MovementHelper:GetRouteGuideTarget(routeIndex: number): Vector3
 	return currentPosition + direction * forwardDistance + right * laneOffset
 end
 
-function MovementHelper:MoveAlongRoute(getRunning: () -> boolean, finalReachDistance: number?): boolean
+function MovementHelper:MoveAlongRoute(
+	getRunning: () -> boolean, 
+	finalReachDistance: number?,
+	moveMode: ("Shelf" | "Checkout" | "Exit")?
+): boolean
 	if #self.routeWaypoints == 0 then
 		return false
 	end
@@ -636,7 +647,9 @@ function MovementHelper:MoveAlongRoute(getRunning: () -> boolean, finalReachDist
 			-- 	laneWidth
 			-- )
 
-			if isFinalWaypoint then
+			local shouldUseGuideSteering = moveMode ~= "Shelf"
+
+			if isFinalWaypoint or not shouldUseGuideSteering then
 				legReached = self:_runPathTo(targetPosition, getRunning, moveToken, reachDistance)
 			else
 				local moveTarget = self:GetRouteGuideTarget(self.routeIndex)
@@ -647,7 +660,7 @@ function MovementHelper:MoveAlongRoute(getRunning: () -> boolean, finalReachDist
 					moveToken,
 					ROUTE_GUIDE_ADVANCE_DISTANCE
 				)
-
+			
 				if not legReached and getRunning() then
 					legReached = self:_runPathTo(targetPosition, getRunning, moveToken, ROUTE_GUIDE_ADVANCE_DISTANCE)
 				end
@@ -697,7 +710,8 @@ function MovementHelper:MoveToTarget(
 	targetCFrame: CFrame,
 	buildRoute: (fromPosition: Vector3) -> { CFrame },
 	getRunning: () -> boolean,
-	finalReachDistance: number?
+	finalReachDistance: number?,
+	moveMode: ("Shelf" | "Checkout" | "Exit")?
 ): boolean
 	if not getRunning() then
 		return false
@@ -711,7 +725,8 @@ function MovementHelper:MoveToTarget(
 	local route = buildRoute(self.root.Position)
 
 	if not route or #route == 0 then
-		route = { targetCFrame }
+		debugStatus(self.debugm, "no valid node route")
+		return false
 	end
 
 	route = pruneRoute(route, self.root.Position, targetCFrame.Position)
@@ -719,7 +734,7 @@ function MovementHelper:MoveToTarget(
 
 	self:SetRoute(route)
 
-	local followed = self:MoveAlongRoute(getRunning, finalReachDistance)
+	local followed = self:MoveAlongRoute(getRunning, finalReachDistance, moveMode)
 
 	if not followed and getRunning() then
 		self.moveToken += 1
